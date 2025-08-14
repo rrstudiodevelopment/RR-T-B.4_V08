@@ -77,6 +77,12 @@ class OT_LinkCollection(Operator):
     bl_options = {'REGISTER', 'UNDO'}
 
     filepath: StringProperty(subtype="FILE_PATH", name="Blend File")
+    
+    # Tambahkan filter untuk hanya menampilkan file .blend
+    filter_glob: StringProperty(
+        default="*.blend",
+        options={'HIDDEN'}
+    )
 
     def execute(self, context):
         scene = context.scene
@@ -112,6 +118,7 @@ class OT_LinkCollection(Operator):
         return {'FINISHED'}
 
     def invoke(self, context, event):
+        # Buka file browser dengan filter yang sudah ditentukan
         context.window_manager.fileselect_add(self)
         return {'RUNNING_MODAL'}
 
