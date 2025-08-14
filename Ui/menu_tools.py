@@ -112,16 +112,16 @@ class RAHA_OT_InfoPopup(bpy.types.Operator):
             layout = self.layout
             
             col = layout.column()
-            col.label(text="update 09/08/2025 - 14:30")
+            col.label(text="update 14/08/2025 - 10:30")
             col.label(text="Raha Tools v08 (beta) blender 4++")            
             col.separator() 
-            col.label(text="- ")
+            col.label(text="- Smart link overade")
                                    
-            col.label(text="- lots of updates")
-            col.label(text="- Restrictions: only Indonesian users are allowed to use it")
-            col.label(text="- snap fk-ik")
+            col.label(text="- ")
+            col.label(text="- ")
+            col.label(text="- ")
             col.separator()
-            col.label(text="- update smart bake - fake constraint")
+            col.label(text="- ")
 #            col.label(text="- )        
 #            col.separator()
 #            col.operator("raha.pb_tool", text="How to Use")            
