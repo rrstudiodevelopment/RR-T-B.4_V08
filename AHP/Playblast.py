@@ -6,6 +6,18 @@ import subprocess
 
 # =================================== UPDATE RESOLUSI & WARNING ===================================
 
+def get_next_version_file(base_name, folder, extension):
+    # Hapus ekstensi
+    name = os.path.splitext(base_name)[0]
+    version = 1
+    while True:
+        versioned_name = f"{name}_v{version:02d}{extension}"
+        full_path = os.path.join(folder, versioned_name)
+        if not os.path.exists(full_path):
+            return full_path
+        version += 1
+
+
 def update_temp_resolution(self, context):
     scene = context.scene
     percentage = scene.RAHA_temporary_resolution_percentage / 100
@@ -111,7 +123,30 @@ class RAHA_OT_Playblast(bpy.types.Operator):
         render.filepath = full_output_path
         render.use_file_extension = file_format in {'PNG', 'JPEG'}
 
+        # Render selesai
         bpy.ops.render.opengl(animation=True)
+
+        # --- Archive ---
+        if scene.RAHA_use_archive:
+            # Tentukan folder Archive di dalam folder output
+            archive_folder = os.path.join(output_path, "Archive")
+            os.makedirs(archive_folder, exist_ok=True)
+
+            # Tentukan nama file versi berikutnya
+            backup_path = get_next_version_file(
+                os.path.basename(full_output_path),
+                archive_folder,
+                os.path.splitext(full_output_path)[1]
+            )
+
+            import shutil
+            try:
+                if os.path.exists(full_output_path):
+                    shutil.copy2(full_output_path, backup_path)
+                    self.report({'INFO'}, f"Backup disimpan di {backup_path}")
+            except Exception as e:
+                self.report({'ERROR'}, f"Gagal backup: {str(e)}")
+                
 
         scene.frame_start = original_start_frame
         scene.frame_end = original_end_frame
@@ -140,6 +175,10 @@ class RAHA_OT_Playblast(bpy.types.Operator):
 
         self.report({'INFO'}, f"Playblast disimpan di {full_output_path}")
         return {'FINISHED'}
+    
+
+
+    
 
 # ======================================== PANEL UI =============================================
 class RAHA_PT_PlayblastPanel(bpy.types.Panel):
@@ -153,8 +192,13 @@ class RAHA_PT_PlayblastPanel(bpy.types.Panel):
         scene = context.scene
 
         layout.label(text="Playblast Settings ")
-        layout.prop(scene, "RAHA_playblast_output_path", text="Output Path")
+        row = layout.row()
+        row.prop(scene, "RAHA_playblast_output_path", text="Output Path")
+                 
         layout.prop(scene, "RAHA_playblast_file_name", text="File Name")
+
+
+        
 
         # Format Settings
         box = layout.box()
@@ -188,9 +232,14 @@ class RAHA_PT_PlayblastPanel(bpy.types.Panel):
 
 
         layout.separator()
-        row = layout.row()
+        row = layout.row(align=True)  # align=True membuat elemen menempel rapat
         row.enabled = not is_resolution_too_low(scene)
+
+        # Checkbox Archive di kiri, tombol Playblast di kanan
+        row.prop(scene, "RAHA_use_archive", text="Auto Archive")
+        row = layout.row(align=True)        
         row.operator("raha.playblast", text="PLAYBLAST")
+
 
 # ======================================== REGISTER =============================================
 classes = (
@@ -201,6 +250,15 @@ classes = (
 def register():
     for cls in classes:
         bpy.utils.register_class(cls)
+        
+    bpy.types.Scene.RAHA_use_archive = bpy.props.BoolProperty(
+        name="Archive Backup",
+        default=False,
+        description="If checked, the playblast result will be copied to a backup folder"
+    )
+
+
+        
 
     bpy.types.Scene.RAHA_playblast_output_path = bpy.props.StringProperty(name="Output Path", subtype='DIR_PATH')
     bpy.types.Scene.RAHA_playblast_file_name = bpy.props.StringProperty(name="File Name", default="playblast")
