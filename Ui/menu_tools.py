@@ -72,34 +72,37 @@ def download_image():
 #=====================================================================================================================
 
 #                   SLIDE INFLUENCE    
+def get_copas_pairs(bone):
+    """
+    Return list of tuples [(rot_constraint, loc_constraint, suffix_str), ...]
+    suffix_str is '' for original (CopasRot / CopasPos), or '02','03',...
+    """
+    rot_dict = {}
+    loc_dict = {}
+    for c in bone.constraints:
+        if c.type == 'COPY_ROTATION' and c.name.lower().startswith("copasrot"):
+            suf = c.name[8:]  # after 'CopasRot'
+            rot_dict[suf] = c
+        elif c.type == 'COPY_LOCATION' and c.name.lower().startswith("copaspos"):
+            suf = c.name[8:]  # after 'CopasPos'
+            loc_dict[suf] = c
 
-def get_copy_constraints(bone):
-    constraint_rot = next((c for c in bone.constraints if c.type == 'COPY_ROTATION' and c.name.startswith("CopasRot")), None)
-    constraint_loc = next((c for c in bone.constraints if c.type == 'COPY_LOCATION' and c.name.startswith("CopasPos")), None)
-    return constraint_rot, constraint_loc
-
-    
-# Fungsi untuk memperbarui influence kedua constraint
-def update_constraints_influence(self, context):
-    bone = self
-    constraint_rot, constraint_loc = get_copy_constraints(bone)
-    
-    if constraint_rot:
-        constraint_rot.influence = bone.copy_constraints_influence
-        constraint_rot.keyframe_insert("influence", frame=bpy.context.scene.frame_current)
-    
-    if constraint_loc:
-        constraint_loc.influence = bone.copy_constraints_influence
-        constraint_loc.keyframe_insert("influence", frame=bpy.context.scene.frame_current)
-
-# Pastikan property di bone sudah ada agar bisa diubah di UI
-bpy.types.PoseBone.copy_constraints_influence = bpy.props.FloatProperty(
-    name="Constraints Influence",
-    default=1.0,
-    min=0.0,
-    max=1.0,
-    update=update_constraints_influence
-)
+    pairs = []
+    # Include only suffixes that have both rot and loc
+    for suf, r in rot_dict.items():
+        if suf in loc_dict:
+            pairs.append((r, loc_dict[suf], suf))
+    # sort so '' (original) first, then numeric ascending
+    def sort_key(t):
+        s = t[2]
+        if s == "":
+            return 0
+        try:
+            return int(s)
+        except:
+            return 9999
+    pairs.sort(key=sort_key)
+    return pairs
 
 #============================================= Panel info ==================================
 class RAHA_OT_InfoPopup(bpy.types.Operator):
@@ -112,16 +115,16 @@ class RAHA_OT_InfoPopup(bpy.types.Operator):
             layout = self.layout
             
             col = layout.column()
-            col.label(text="update 09/08/2025 - 14:30")
-            col.label(text="Raha Tools v08 (beta) blender 4++")            
+            col.label(text="update 30/08/2025 - 15:30")
+            col.label(text="Raha Tools v08.1 (beta) blender 4++")            
             col.separator() 
-            col.label(text="- ")
+            col.label(text="- update PBS ")
                                    
-            col.label(text="- lots of updates")
-            col.label(text="- Restrictions: only Indonesian users are allowed to use it")
-            col.label(text="- snap fk-ik")
-            col.separator()
-            col.label(text="- update smart bake - fake constraint")
+            col.label(text="- Parent Bake stepsnap")
+#            col.label(text="- ")
+#            col.label(text="- ")
+#            col.separator()
+#            col.label(text="- ")
 #            col.label(text="- )        
 #            col.separator()
 #            col.operator("raha.pb_tool", text="How to Use")            
@@ -258,6 +261,12 @@ class RAHA_PT_Tools_For_Animation(bpy.types.Panel):
     bl_order = 1
     
     preview_collection = None 
+    
+    def get_parent_child_constraints(self, target):
+        """Ambil constraint Child Of dari object atau pose bone"""
+        if hasattr(target, "constraints"):
+            return [c for c in target.constraints if c.type == 'CHILD_OF']
+        return []    
 
     def draw(self, context):
         layout = self.layout
@@ -266,7 +275,8 @@ class RAHA_PT_Tools_For_Animation(bpy.types.Panel):
         scene = context.scene   
         scn = context.scene
         wm = context.window_manager
-        keyconfigs = wm.keyconfigs                
+        keyconfigs = wm.keyconfigs   
+        bone = context.active_pose_bone                     
         
         preview_collection = None             
 
@@ -410,41 +420,102 @@ class RAHA_PT_Tools_For_Animation(bpy.types.Panel):
             
             # Main constraint buttons
             row = box.row(align=True)        
-            row.operator("floating.open_childof", text="Child-of")
-            row.operator("floating.open_locrote", text="Locrote")  
+            row.operator("raha_parent.create", text="Child-of")
+            row.operator("locrote.create", text="Locrote")  
             
+            # ----------------- Child-Of Constraint -----------------
+            constraints = []
+            if obj:
+                if bone:
+                    constraints = self.get_parent_child_constraints(bone)
+                else:
+                    constraints = self.get_parent_child_constraints(obj)
+
+            if constraints:
+                layout.separator()
+                for c in constraints:
+                    box = layout.box()
+                    header = box.row(align=True)
+                    target_name = ""
+                    if c.target:
+                        target_name = c.target.name
+                        if getattr(c, "subtarget", ""):
+                            target_name += "." + c.subtarget
+                    header.label(text=f"Child-of: {target_name}")
+
+                    # Row influence & keyframe
+                    row = box.row(align=True)
+                    row.prop(c, "influence", text="Influence")
+                    op = row.operator("childof.insert_influence_key", text="", icon="KEY_HLT")
+                    op.constraint_name = c.name
+                    op = row.operator("raha.clear_constraint_keys", text="", icon="KEYTYPE_GENERATED_VEC")
+                    op.constraint_name = c.name                
+
+                    # Row enable/disable
+                    row = box.row(align=True)
+                    op = row.operator("raha.enable_constraint_single", text="Enable", icon="LINKED")
+                    op.constraint_name = c.name
+                    op = row.operator("raha_parent.disable", text="Disable", icon="UNLINKED")
+                    op.constraint_name = c.name
+
+                    # Row inverse & apply/clear/trash
+                    row = box.row(align=False)
+                    op = row.operator("raha.set_inverse_single", text="", icon="ARROW_LEFTRIGHT")
+                    op.constraint_name = c.name
+                    op = row.operator("raha.clear_inverse_single", text="", icon="TRACKING_CLEAR_BACKWARDS")
+                    op.constraint_name = c.name
+                    op = row.operator("raha.apply_constraint_single", text="", icon="CHECKMARK")
+                    op.constraint_name = c.name
+                    op = row.operator("raha.clear_constraint_keys", text="", icon="KEYTYPE_GENERATED_VEC")
+                    op.constraint_name = c.name
+                    op = row.operator("raha.delete_constraint_single", text="", icon="TRASH")
+                    op.constraint_name = c.name
+
+
+            # ----------------- LocRotate Constraint Slider -----------------
+
+            target = bone if bone else obj
+            if target:
+                pairs = get_copas_pairs(target) if 'get_copas_pairs' in globals() else []
+                if pairs:
+                    box = layout.box()
+                    box.label(text="Parent Locrote")
+                    for r, l, suf in pairs:
+                        suf_for_prop = "" if suf == "" else suf
+                        idx = 1 if suf_for_prop == "" else int(suf_for_prop)
+                        prop_name = f"combined_influence_{str(idx).zfill(2)}"
+
+                        row = box.row(align=True)
+                        # Slider
+                        row.prop(target, prop_name, slider=True, text=f"influence {str(idx).zfill(2)}")
+                        # Keyframe & Clear
+                        op_apply = row.operator("locrote.apply_key", text="", icon="DECORATE_KEYFRAME")
+                        op_apply.suffix = "" if suf_for_prop == "" else suf_for_prop
+                        op_clear = row.operator("locrote.clear_keys", text="", icon="KEYTYPE_GENERATED_VEC")
+                        op_clear.suffix = "" if suf_for_prop == "" else suf_for_prop
+
+                        # Baris tombol aksi
+                        row = box.row(align=True)
+                        op_enable = row.operator("locrote.enable", text="Enable")
+                        op_enable.suffix = "" if suf_for_prop == "" else suf_for_prop
+                        op_disable = row.operator("locrote.disable", text="Disable")
+                        op_disable.suffix = "" if suf_for_prop == "" else suf_for_prop
+                        op_trash = row.operator("locrote.delete", text="", icon="TRASH")
+                        op_trash.suffix = "" if suf_for_prop == "" else suf_for_prop
+                        op_apply_constraints = row.operator("locrote.apply_both_constraints", text="", icon="CHECKMARK")
+                        op_apply_constraints.suffix = "" if suf_for_prop == "" else suf_for_prop
+    #                    box = layout.box()  
+          
+            box.separator()                 
+            box = layout.box()
+            header = box.row(align=True)                              
             # Additional tools
+            box.operator("object.add_controler", text="Add Controller", icon="BONE_DATA")            
             box.operator("floating.open_smart_bake", text="Smart Bake")               
 
             # Separator
             box.separator()
-            
-            # Influence controls
-            obj = context.object
-            if obj and obj.pose:
-                # Child Of influence
-                for bone in obj.pose.bones:
-                    if bone.bone.select:
-                        constraints = [c for c in bone.constraints 
-                                     if c.type == 'CHILD_OF' 
-                                     and c.name.startswith("parent_child")]
-                        for constraint in constraints:
-                            row = box.row()
-                            row.label(text=f"Child Of: {constraint.subtarget}")
-                            row.prop(constraint, "influence", text="Influence Child off", slider=True)
-                
-                # LocRot influence
-                for bone in obj.pose.bones:
-                    if bone.bone.select:
-                        constraint_rot, constraint_loc = get_copy_constraints(bone)
-                        if constraint_rot or constraint_loc:
-                            row = box.row()
-                            row.label(text="LocRot Influence:")
-                            # Use the bone property we defined earlier which has the update function
-                            row.prop(bone, "copy_constraints_influence", text="influence Locrote", slider=True)
-                            
-                            # The actual constraint updates will be handled by the update_constraints_influence function
-                            # that we connected to the bone property
+
                             
 #================================ Menu Fake Constraint Dan Step SNap ==================================================================      
         # Checkbox untuk menampilkan Tween Machine
@@ -467,8 +538,8 @@ class RAHA_PT_Tools_For_Animation(bpy.types.Panel):
             row.operator("pose.raha_apply_bone_matrix_mirror", text="Mirror", icon="PASTEFLIPDOWN")
             
             # Section 2: Animation Tools
-            box = layout.box()
-            box.label(text="Step Snap")
+
+            box.label(text="Step Snap:")
             
             col = box.column(align=True)
             col.label(text="Frame Range:")
@@ -691,15 +762,6 @@ def register():
         default=False
     )              
     
-    bpy.types.PoseBone.copy_constraints_influence = bpy.props.FloatProperty(
-        name="Copy Constraints Influence",
-        description="Control the influence of both Copy Location and Copy Rotation constraints",
-        default=1.0,
-        min=0.0,
-        max=1.0,
-        update=update_constraints_influence
-    
-    )
 
 
     # Pastikan koleksi preview sudah ada

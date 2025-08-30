@@ -199,10 +199,11 @@ class RahaSaveBoneMatrix(bpy.types.Operator):
         self.report({'INFO'}, f"Matrix world bone '{bone.name}' tersimpan!")
         return {'FINISHED'}
 
+
 class RahaApplyBoneMatrix(bpy.types.Operator):
     bl_idname = "pose.raha_apply_bone_matrix"
     bl_label = "Apply Fake Constraint (Universal)"
-    bl_description = "Apply saved world matrix to active or selected bones"
+    bl_description = "Apply saved world matrix to active or selected bones (auto keyframe if Auto Key is on)"
 
     def execute(self, context):
         global stored_matrix_world
@@ -217,18 +218,32 @@ class RahaApplyBoneMatrix(bpy.types.Operator):
         obj = context.active_object
         bones = context.selected_pose_bones or [context.active_pose_bone]
 
+        autokey = context.scene.tool_settings.use_keyframe_insert_auto
+        frame = context.scene.frame_current
+
         for bone in bones:
             local_matrix = obj.matrix_world.inverted() @ stored_matrix_world
             bone.matrix = local_matrix
             bone.rotation_mode = 'XYZ'
 
-        self.report({'INFO'}, f"Matrix diterapkan ke {len(bones)} bone")
+            # Kalau autokey aktif → insert keyframe
+            if autokey:
+                bone.keyframe_insert(data_path="location", frame=frame)
+                bone.keyframe_insert(data_path="rotation_quaternion", frame=frame)
+                bone.keyframe_insert(data_path="rotation_euler", frame=frame)
+                bone.keyframe_insert(data_path="scale", frame=frame)
+
+        msg = f"Matrix diterapkan ke {len(bones)} bone"
+        if autokey:
+            msg += " + keyframe dimasukkan"
+        self.report({'INFO'}, msg)
         return {'FINISHED'}
-    
+
+
 class RahaApplyBoneMatrixMirror(bpy.types.Operator):
     bl_idname = "pose.raha_apply_bone_matrix_mirror"
     bl_label = "Apply Fake Constraint (Mirror)"
-    bl_description = "Apply saved world matrix with mirror on selected axis"
+    bl_description = "Apply saved world matrix with mirror on selected axis (auto keyframe if Auto Key is on)"
     
     mirror_axis: bpy.props.EnumProperty(
         name="Mirror Axis",
@@ -257,7 +272,7 @@ class RahaApplyBoneMatrixMirror(bpy.types.Operator):
         obj = context.active_object
         bones = context.selected_pose_bones or [context.active_pose_bone]
 
-        # Create mirror matrix based on selected axis
+        # Buat mirror matrix
         if self.mirror_axis == 'X':
             mirror_mat = mathutils.Matrix.Scale(-1, 4, (1, 0, 0))
         elif self.mirror_axis == 'Y':
@@ -265,14 +280,30 @@ class RahaApplyBoneMatrixMirror(bpy.types.Operator):
         else:  # Z
             mirror_mat = mathutils.Matrix.Scale(-1, 4, (0, 0, 1))
         
+        autokey = context.scene.tool_settings.use_keyframe_insert_auto
+        frame = context.scene.frame_current
+
         for bone in bones:
             mirrored_world = mirror_mat @ stored_matrix_world @ mirror_mat
             local_matrix = obj.matrix_world.inverted() @ mirrored_world
             bone.matrix = local_matrix
             bone.rotation_mode = 'XYZ'
 
-        self.report({'INFO'}, f"Mirrored matrix applied to {len(bones)} bones (Axis: {self.mirror_axis})")
-        return {'FINISHED'}    
+            # Kalau autokey aktif → insert keyframe
+            if autokey:
+                bone.keyframe_insert(data_path="location", frame=frame)
+                if bone.rotation_mode == 'QUATERNION':
+                    bone.keyframe_insert(data_path="rotation_quaternion", frame=frame)
+                else:
+                    bone.keyframe_insert(data_path="rotation_euler", frame=frame)
+                bone.keyframe_insert(data_path="scale", frame=frame)
+
+        msg = f"Mirrored matrix applied to {len(bones)} bones (Axis: {self.mirror_axis})"
+        if autokey:
+            msg += " + keyframe inserted"
+        self.report({'INFO'}, msg)
+        return {'FINISHED'}
+
 
 class RahaForwardAnimation(bpy.types.Operator):
     """Save transformation at start frame then apply it forward to end frame with keyframes"""
@@ -284,22 +315,59 @@ class RahaForwardAnimation(bpy.types.Operator):
         scene = context.scene
         start_frame = scene.start_frame
         end_frame = scene.end_frame
-        
-        if obj and obj.type == 'ARMATURE' and obj.mode == 'POSE':
-            bone = obj.pose.bones.get(context.active_pose_bone.name)
-            if bone:
-                stored_matrices[bone.name] = {
-                    "matrix": [list(row) for row in (obj.matrix_world @ bone.matrix)]
-                }
-                for frame in range(start_frame, end_frame + 1):
-                    scene.frame_set(frame)
-                    matrix_data = stored_matrices[bone.name]["matrix"]
-                    bone.matrix = obj.matrix_world.inverted() @ mathutils.Matrix(matrix_data)
-                    bone.keyframe_insert(data_path="location", index=-1)
-                    bone.keyframe_insert(data_path="rotation_quaternion", index=-1)
-                    bone.keyframe_insert(data_path="rotation_euler", index=-1)
-                self.report({'INFO'}, "Forward animation applied.")
+
+        if not (obj and obj.type == 'ARMATURE' and obj.mode == 'POSE'):
+            self.report({'WARNING'}, "Harap masuk ke Pose Mode dan pilih armature aktif.")
+            return {'CANCELLED'}
+
+        active_pb = context.active_pose_bone
+        if not active_pb:
+            self.report({'WARNING'}, "Tidak ada bone aktif.")
+            return {'CANCELLED'}
+
+        bone = obj.pose.bones.get(active_pb.name)
+        if not bone:
+            self.report({'WARNING'}, "Bone aktif tidak ditemukan.")
+            return {'CANCELLED'}
+
+        # simpan frame saat ini supaya bisa dikembalikan
+        current_frame = scene.frame_current
+
+        # pindah ke start_frame dan ambil transform yang dievaluasi di frame itu
+        scene.frame_set(start_frame)
+        depsgraph = context.evaluated_depsgraph_get()
+        obj_eval = obj.evaluated_get(depsgraph)
+        bone_eval = obj_eval.pose.bones.get(bone.name)
+        if not bone_eval:
+            scene.frame_set(current_frame)
+            self.report({'ERROR'}, f"Gagal mengevaluasi bone '{bone.name}' pada frame {start_frame}.")
+            return {'CANCELLED'}
+
+        world_matrix = obj_eval.matrix_world @ bone_eval.matrix
+        stored_matrices[bone.name] = {
+            "matrix": [list(row) for row in world_matrix]
+        }
+
+        # Terapkan matrix yang sama ke semua frame dalam rentang
+        for f in range(start_frame, end_frame + 1):
+            scene.frame_set(f)
+            mat = mathutils.Matrix(stored_matrices[bone.name]["matrix"])
+            bone.matrix = obj.matrix_world.inverted() @ mat
+
+            # masukkan keyframe pada frame f (sesuaikan dengan rotation_mode)
+            bone.keyframe_insert(data_path="location", frame=f, index=-1)
+            if bone.rotation_mode == 'QUATERNION':
+                bone.keyframe_insert(data_path="rotation_quaternion", frame=f, index=-1)
+            else:
+                bone.keyframe_insert(data_path="rotation_euler", frame=f, index=-1)
+            bone.keyframe_insert(data_path="scale", frame=f, index=-1)
+
+        # kembalikan ke frame semula
+        scene.frame_set(current_frame)
+
+        self.report({'INFO'}, "Forward animation applied.")
         return {'FINISHED'}
+
 
 class RahaBackwardAnimation(bpy.types.Operator):
     """Save transformation at end frame then apply it backward to start frame with keyframes"""    

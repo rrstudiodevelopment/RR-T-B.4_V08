@@ -4,6 +4,9 @@ import webbrowser
 from bpy.props import FloatVectorProperty
 from mathutils import Matrix
 import json
+import os
+from bpy.props import StringProperty, EnumProperty
+from bpy.types import Operator, Panel
 
 # Dictionary to store bone matrices
 stored_matrices = {}
@@ -34,6 +37,91 @@ def pre_save_handler(dummy):
                     break
 
 # ======================================= override_and_make_local  LINK  =================================================
+
+def collection_dir_in_blend(filepath: str) -> str:
+    """Bentuk path directory untuk langsung ke Collection."""
+    path = bpy.path.abspath(filepath).replace("\\", "/")
+    return f"{path}/Collection/"
+
+
+def find_collection_in_blend(filepath: str, keyword: str, mode: str) -> str | None:
+    """Cari collection berdasarkan mode pencarian."""
+    kw = keyword.strip().lower()
+    if not kw:
+        return None
+
+    try:
+        with bpy.data.libraries.load(filepath, link=False) as (data_from, data_to):
+            if mode == "START":
+                for col in data_from.collections:
+                    if col and col.lower().startswith(kw):
+                        return col
+            elif mode == "END":
+                for col in data_from.collections:
+                    if col and col.lower().endswith(kw):
+                        return col
+            elif mode == "CONTAINS":
+                for col in data_from.collections:
+                    if col and kw in col.lower():
+                        return col
+    except Exception as e:
+        print(f"[Linker] Error reading library: {e}")
+
+    return None
+
+
+class OT_LinkCollection(Operator):
+    bl_idname = "wm.link_collection_from_blend"
+    bl_label = "Link"
+    bl_description = "Pilih file .blend lalu link Collection (opsional auto-pilih dengan keyword)"
+    bl_options = {'REGISTER', 'UNDO'}
+
+    filepath: StringProperty(subtype="FILE_PATH", name="Blend File")
+    
+    # Tambahkan filter untuk hanya menampilkan file .blend
+    filter_glob: StringProperty(
+        default="*.blend",
+        options={'HIDDEN'}
+    )
+
+    def execute(self, context):
+        scene = context.scene
+        keyword = scene.link_keyword
+        mode = scene.link_mode
+
+        if not self.filepath or not os.path.isfile(bpy.path.abspath(self.filepath)):
+            self.report({'ERROR'}, "File path tidak valid")
+            return {'CANCELLED'}
+
+        blend_path = bpy.path.abspath(self.filepath)
+        directory = collection_dir_in_blend(blend_path)
+
+        if keyword.strip():
+            col_name = find_collection_in_blend(blend_path, keyword, mode)
+            if col_name:
+                try:
+                    bpy.ops.wm.link(
+                        directory=directory,
+                        files=[{"name": col_name}],
+                        relative_path=True
+                    )
+                    self.report({'INFO'}, f"Linked collection: {col_name}")
+                except Exception as e:
+                    self.report({'ERROR'}, f"Gagal link: {e}")
+                    return {'CANCELLED'}
+            else:
+                self.report({'WARNING'}, f"Tidak ditemukan collection dengan mode {mode.lower()} '{keyword}'")
+                bpy.ops.wm.link('INVOKE_DEFAULT', directory=directory, relative_path=True)
+        else:
+            bpy.ops.wm.link('INVOKE_DEFAULT', directory=directory, relative_path=True)
+
+        return {'FINISHED'}
+
+    def invoke(self, context, event):
+        # Buka file browser dengan filter yang sudah ditentukan
+        context.window_manager.fileselect_add(self)
+        return {'RUNNING_MODAL'}
+
 
 def override_and_make_local(self, context):
     selected_objects = context.selected_objects
@@ -477,10 +565,6 @@ class OBJECT_OT_add_controler(bpy.types.Operator):
 #  ======================================================  TOMBOL ============================================== 
 
 
-
-
-
-
 class VIEW3D_PT_MiniTools(bpy.types.Panel):
     bl_label = "Raha Mini Tools"
     bl_idname = "VIEW3D_PT_mini_tools"
@@ -503,7 +587,7 @@ class VIEW3D_PT_MiniTools(bpy.types.Panel):
 
         # ==================== SAFETY & SIMPLIFY ====================
         safety_box = layout.box()
-        safety_box.label(text="Performance", icon='TIME')               
+        safety_box.label(text="Performance", icon='TIME')                      
         safety_box.prop(scene, "save_aman", text="Safety Mode", icon='LOCKED' if scene.save_aman else 'UNLOCKED')
         safety_box.prop(scene.render, "use_simplify", text="Simplify Render")
         
@@ -514,7 +598,10 @@ class VIEW3D_PT_MiniTools(bpy.types.Panel):
         # ==================== LINK TOOLS ====================
         link_box = layout.box()
         link_box.label(text="Linking Tools", icon='LINKED')
-        
+        link_box.prop(scene, "link_keyword", text="Keyword")
+        link_box.prop(scene, "link_mode", text="Search Mode") 
+        link_box.operator(OT_LinkCollection.bl_idname, icon='IMPORT')
+                
         flow = link_box.grid_flow(row_major=True, columns=2, even_columns=True, even_rows=True, align=True)
         flow.operator("object.only_override", text="Make Override", icon="LINKED")
         flow.operator("object.override_local", text="Local Override", icon="FILE_TICK")
@@ -687,7 +774,23 @@ def register():
         update=update_simplify_subdivision
     )    
     
-    bpy.utils.register_class(FLOATING_OT_Decimate_Temporary)     
+    bpy.types.Scene.link_keyword = StringProperty(
+        name="Keyword",
+        description="Teks pencarian collection (opsional)",
+        default=""
+    )
+    bpy.types.Scene.link_mode = EnumProperty(
+        name="Search Mode",
+        description="Metode pencarian nama collection",
+        items=[
+            ("START", "Start With", "Nama diawali keyword"),
+            ("END", "End With", "Nama diakhiri keyword"),
+            ("CONTAINS", "Contains", "Nama mengandung keyword")
+        ],
+        default="START"
+    )
+    
+    bpy.utils.register_class(OT_LinkCollection)         
     bpy.utils.register_class(OBJECT_OT_OverrideLocal)
     bpy.utils.register_class(OBJECT_OT_OnlyOverride)    
     
@@ -711,7 +814,7 @@ def register():
         
 # Fungsi untuk menghapus pendaftaran class dari Blender
 def unregister():
-    bpy.utils.unregister_class(FLOATING_OT_Decimate_Temporary)     
+    bpy.utils.unregister_class(OT_LinkCollection)     
     bpy.utils.unregister_class(VIEW3D_PT_MiniTools)  
         
     bpy.utils.unregister_class(OBJECT_OT_OverrideLocal) 
@@ -738,3 +841,4 @@ def unregister():
 
 if __name__ == "__main__":
     register()
+    
