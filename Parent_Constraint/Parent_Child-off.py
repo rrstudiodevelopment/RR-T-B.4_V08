@@ -264,6 +264,10 @@ def dp_create_raha_parent_obj(op):
         for ob in list_selected_obj:
             ob.select_set(False)
         obj.select_set(True)
+        
+        op.report({'INFO'}, 
+                  f"Parent successfully created")        
+        
     else:
         op.report({"ERROR"}, "Two objects must be selected")
 
@@ -314,7 +318,13 @@ def dp_create_raha_parent_pbone(op):
         # refresh matrix agar konsisten
         bpy.context.view_layer.update()
 
+    # info print
+    op.report({'INFO'}, 
+              f"Parent successfully created")
+
+
     return {'FINISHED'}
+
 
 
 
@@ -469,11 +479,25 @@ class RAHA_OT_apply_constraint(bpy.types.Operator):
                 return c
         return None
 
+    def _insert_keys(self, target, frame):
+        """Insert keyframe sesuai rotation_mode + loc/scale."""
+        target.keyframe_insert(data_path="location", frame=frame)
+        if target.rotation_mode == 'QUATERNION':
+            target.keyframe_insert(data_path="rotation_quaternion", frame=frame)
+        elif target.rotation_mode == 'AXIS_ANGLE':
+            target.keyframe_insert(data_path="rotation_axis_angle", frame=frame)
+        else:  # Euler (XYZ, ZYX, dll)
+            target.keyframe_insert(data_path="rotation_euler", frame=frame)
+        target.keyframe_insert(data_path="scale", frame=frame)
+
     def execute(self, context):
         cname = (self.constraint_name or "").strip()
         if not cname:
             self.report({'ERROR'}, "Constraint name is empty.")
             return {'CANCELLED'}
+
+        auto_key = context.scene.tool_settings.use_keyframe_insert_auto
+        frame = context.scene.frame_current
 
         # POSE MODE
         if context.mode == "POSE" and context.active_pose_bone:
@@ -483,13 +507,18 @@ class RAHA_OT_apply_constraint(bpy.types.Operator):
                 self.report({'WARNING'}, f'Constraint "{cname}" not found on bone.')
                 return {'CANCELLED'}
 
-            # Bake transform manual ke bone
             arm = context.object
             mat = bone.matrix.copy()
             bone.constraints.remove(const)
             bone.matrix = mat
             arm.update_tag(refresh={'DATA'})
             context.view_layer.update()
+
+            if auto_key:
+                self._insert_keys(bone, frame)
+
+            self.report({'INFO'}, f'Apply constraint succes".')
+            print(f'[RahaTools] Apply constraint "{cname}" on bone "{bone.name}" at frame {frame}')
 
         # OBJECT MODE
         elif context.mode == "OBJECT" and context.object:
@@ -499,17 +528,23 @@ class RAHA_OT_apply_constraint(bpy.types.Operator):
                 self.report({'WARNING'}, f'Constraint "{cname}" not found on object.')
                 return {'CANCELLED'}
 
-            # Bake transform manual ke object
             mat = obj.matrix_world.copy()
             obj.constraints.remove(const)
             obj.matrix_world = mat
             context.view_layer.update()
+
+            if auto_key:
+                self._insert_keys(obj, frame)
+
+            self.report({'INFO'}, f'Apply constraint succes.')
+            print(f'[RahaTools] Apply constraint "{cname}" on object "{obj.name}" at frame {frame}')
 
         else:
             self.report({'ERROR'}, "No active bone or object selected.")
             return {'CANCELLED'}
 
         return {'FINISHED'}
+
 
 class RAHA_OT_set_inverse(bpy.types.Operator):
     bl_idname = "raha.set_inverse_single"
@@ -641,6 +676,7 @@ class RAHA_OT_delete_constraint(bpy.types.Operator):
 class RAHA_OT_enable_constraint(bpy.types.Operator):
     bl_idname = "raha.enable_constraint_single"
     bl_label = "Enable (single)"
+    bl_description = "Enable Constraint: ON Parent"    
     bl_options = {"REGISTER", "UNDO"}
 
     constraint_name: StringProperty()
@@ -803,12 +839,11 @@ class RAHA_OT_enable_constraint(bpy.types.Operator):
 
 
 class RAHA_OT_disable_constraint(bpy.types.Operator):
-    """Disable Child Of (single atau batch). 
-    Jika constraint_name diisi -> hanya constraint itu yang di-disable.
-    Jika kosong -> fallback ke mode lama (batch untuk selection)."""
     bl_idname = "raha_parent.disable"
     bl_label = "Disable Constraint"
+    bl_description = "Disable Constraint: Off Parent"    
     bl_options = {"REGISTER", "UNDO"}
+    
 
     constraint_name: StringProperty(default="")
 
@@ -898,7 +933,8 @@ class RAHA_OT_disable_constraint(bpy.types.Operator):
 
 class RAHA_OT_clear_constraint_keys(bpy.types.Operator):
     bl_idname = "raha.clear_constraint_keys"
-    bl_label = "Clear Keys (constraint)"
+    bl_label = "Clear Keys (Parent)"
+    bl_description = "Delet All keyframe Influence Only"    
     constraint_name: StringProperty()
 
     def execute(self, context):
@@ -920,6 +956,44 @@ class RAHA_OT_clear_constraint_keys(bpy.types.Operator):
                 action.fcurves.remove(fcurve)
 
         return {'FINISHED'}
+
+
+
+
+class RAHA_OT_clear_constraint_key_current(bpy.types.Operator):
+    bl_idname = "raha.clear_constraint_key_current"
+    bl_label = "delete Key (Parent - Current Frame)"
+    bl_description = "Delete influence keyframe at the current frame only"    
+    constraint_name: StringProperty()
+
+    def execute(self, context):
+        ob = context.object
+        if not ob or not ob.animation_data or not ob.animation_data.action:
+            return {'CANCELLED'}
+
+        action = ob.animation_data.action
+        current_frame = context.scene.frame_current
+
+        # Tentukan path sesuai jenis target
+        if ob.type == 'ARMATURE' and context.mode == 'POSE' and context.active_pose_bone:
+            target_path = f'pose.bones["{context.active_pose_bone.name}"].constraints["{self.constraint_name}"]'
+        else:
+            target_path = f'constraints["{self.constraint_name}"]'
+
+        found = False
+        for fcurve in action.fcurves:
+            if fcurve.data_path.startswith(target_path):
+                key_indices = [i for i, kp in enumerate(fcurve.keyframe_points) if int(kp.co.x) == current_frame]
+                for i in reversed(key_indices):
+                    fcurve.keyframe_points.remove(fcurve.keyframe_points[i])
+                    found = True
+                fcurve.update()
+
+        if not found:
+            self.report({'INFO'}, f"No keyframe found at frame {current_frame}")
+
+        return {'FINISHED'}
+
 
 
 # ========================================================================================================================
@@ -972,11 +1046,10 @@ class VIEW3D_PT_Raha_Parents(bpy.types.Panel):
                 
                 row = box.row(align=True)
                 row.prop(c, "influence", text="Influence")
-                op = row.operator("childof.insert_influence_key", text="", icon="KEY_HLT")
+                op = row.operator("childof.insert_influence_key", text="", icon="KEYTYPE_KEYFRAME_VEC")
                 op.constraint_name = c.name
-                op = row.operator("raha.clear_constraint_keys", text="", icon="KEYTYPE_GENERATED_VEC")
-                op.constraint_name = c.name                
-              
+                op = row.operator("raha.clear_constraint_key_current", text="", icon="KEYFRAME")
+                op.constraint_name = c.name                              
                 
                 row = box.row(align=True)
                 op = row.operator("raha.enable_constraint_single", text="Enable", icon="LINKED")
@@ -1013,6 +1086,7 @@ classes = (
     RAHA_OT_enable_constraint,
     RAHA_OT_disable_constraint,
     RAHA_OT_clear_constraint_keys,
+    RAHA_OT_clear_constraint_key_current,
     CHILD_OT_insert_influence_keyframe,   # <-- TAMBAHKAN INI
 #    VIEW3D_PT_Raha_Parents,
 )

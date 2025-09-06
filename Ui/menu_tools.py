@@ -115,12 +115,14 @@ class RAHA_OT_InfoPopup(bpy.types.Operator):
             layout = self.layout
             
             col = layout.column()
-            col.label(text="update 30/08/2025 - 15:30")
-            col.label(text="Raha Tools v08.1 (beta) blender 4++")            
+            col.label(text="update 06/09/2025 - 20:40")
+            col.label(text="Raha Tools v08.2 (beta) blender 4++")            
             col.separator() 
-            col.label(text="- update PBS ")
+            col.label(text="- ")
                                    
-            col.label(text="- Parent Bake stepsnap")
+            col.label(text="- Update Custom Axis")
+            col.label(text="- In Fake Constraint & StepSnap")
+            col.label(text="- Update Button Report")
 #            col.label(text="- ")
 #            col.label(text="- ")
 #            col.separator()
@@ -299,9 +301,10 @@ class RAHA_PT_Tools_For_Animation(bpy.types.Panel):
 
         row = layout.row()
         row.alignment = 'RIGHT'
+        row.operator("raha.discord", text="Report", icon='COMMUNITY')        
         row.operator("raha.subscribe", text="", icon='PLAY')            
-        row.operator("raha.donate", text="", icon='FUND')  
-        row.operator("raha.info_update", text="", icon='INFO')         
+        row.operator("raha.donate", text="Request", icon='FUND')  
+        row.operator("raha.info_update", text="", icon='INFO')        
                        
 #===================================== KEY MAP UI ===========================================
 
@@ -446,9 +449,9 @@ class RAHA_PT_Tools_For_Animation(bpy.types.Panel):
                     # Row influence & keyframe
                     row = box.row(align=True)
                     row.prop(c, "influence", text="Influence")
-                    op = row.operator("childof.insert_influence_key", text="", icon="KEY_HLT")
+                    op = row.operator("childof.insert_influence_key", text="", icon="KEYTYPE_KEYFRAME_VEC")
                     op.constraint_name = c.name
-                    op = row.operator("raha.clear_constraint_keys", text="", icon="KEYTYPE_GENERATED_VEC")
+                    op = row.operator("raha.clear_constraint_key_current", text="", icon="KEYFRAME")
                     op.constraint_name = c.name                
 
                     # Row enable/disable
@@ -526,22 +529,49 @@ class RAHA_PT_Tools_For_Animation(bpy.types.Panel):
         if scene.show_step:  # Ini yang diubah dari show_parent ke show_step
             # Create main box for all parent constraint controls
             box = layout.box()
+            box.prop(scene, "apply_custom_axis", text="Custom Axis")
             
-            # Info button at top right
-            row = box.row()
-            row.alignment = 'RIGHT'
-            row.operator("raha.step_snap", text="", icon='INFO')
-            box.label(text="Fake Constraints:")
+            if scene.apply_custom_axis:
+                row = box.row()
+                
+                # Location Column
+                col = row.column()
+                col.prop(scene, "apply_location", text="Location")
+                if scene.apply_location:
+                    row_axis = col.row(align=True)
+                    row_axis.prop(scene, "location_axis_x", text="X", toggle=True)
+                    row_axis.prop(scene, "location_axis_y", text="Y", toggle=True)
+                    row_axis.prop(scene, "location_axis_z", text="Z", toggle=True)
+                
+                # Rotation Column
+                col = row.column()
+                col.prop(scene, "apply_rotation", text="Rotation")
+                if scene.apply_rotation:
+                    row_axis = col.row(align=True)
+                    row_axis.prop(scene, "rotation_axis_x", text="X", toggle=True)
+                    row_axis.prop(scene, "rotation_axis_y", text="Y", toggle=True)
+                    row_axis.prop(scene, "rotation_axis_z", text="Z", toggle=True)
+                
+                # Scale Column
+                col = row.column()
+                col.prop(scene, "apply_scale", text="Scale")
+                if scene.apply_scale:
+                    row_axis = col.row(align=True)
+                    row_axis.prop(scene, "scale_axis_x", text="X", toggle=True)
+                    row_axis.prop(scene, "scale_axis_y", text="Y", toggle=True)
+                    row_axis.prop(scene, "scale_axis_z", text="Z", toggle=True)        
+            
+            # Section 1: Fake Constraints
+
+            box.label(text="Fake Constraints & StepSnap :")
             row = box.row(align=True)
             row.operator("pose.raha_save_bone_matrix", text="Save", icon="COPYDOWN")
             row.operator("pose.raha_apply_bone_matrix", text="Paste", icon="PASTEDOWN")
             row.operator("pose.raha_apply_bone_matrix_mirror", text="Mirror", icon="PASTEFLIPDOWN")
             
-            # Section 2: Animation Tools
 
-            box.label(text="Step Snap:")
             
-            col = box.column(align=True)
+            col = box.column(align=True)    
             col.label(text="Frame Range:")
             row = col.row(align=True)
             row.prop(scene, "start_frame", text="Start")
@@ -549,7 +579,7 @@ class RAHA_PT_Tools_For_Animation(bpy.types.Panel):
             
             row = box.row(align=True)
             row.operator("object.forward_animation", text="Forward", icon='TRIA_RIGHT')
-            row.operator("object.backward_animation", text="Backward", icon='TRIA_LEFT')            
+            row.operator("object.backward_animation", text="Backward", icon='TRIA_LEFT')         
                          
 
 #========================================= Def Donate Link ===================================================
@@ -570,6 +600,15 @@ class RAHA_OT_Subscribe(bpy.types.Operator):
     def execute(self, context):
         webbrowser.open("https://www.youtube.com/@RR_STUDIO26")
         return {'FINISHED'}    
+#========================================= Def Report Bug TO discord Link ===================================================    
+class RAHA_OT_Discord(bpy.types.Operator):
+    """Report Bug and Join Discrod"""
+    bl_idname = "raha.discord"
+    bl_label = "Report Bug and Join Discrod"
+
+    def execute(self, context):
+        webbrowser.open("https://discord.com/invite/jS8HXW8gkz")
+        return {'FINISHED'}      
 
 #========================================= Def Tutorial Tween Machine ===================================================    
 class RAHA_OT_Tween_Machine_Tutor(bpy.types.Operator):
@@ -788,6 +827,7 @@ def register():
 #================================================================================================ 
 
     bpy.utils.register_class(RAHA_OT_InfoPopup)
+    bpy.utils.register_class(RAHA_OT_Discord)    
     bpy.utils.register_class(RAHA_OT_Donate)
     bpy.utils.register_class(RAHA_OT_Subscribe)
     bpy.utils.register_class(RAHA_OT_Tween_Machine_Tutor)         
@@ -839,6 +879,7 @@ def unregister():
   
     
     bpy.utils.unregister_class(RAHA_OT_InfoPopup)
+    bpy.utils.unregister_class(RAHA_OT_Discord)      
     bpy.utils.unregister_class(RAHA_OT_Donate)
     bpy.utils.unregister_class(RAHA_OT_Subscribe)    
     bpy.utils.unregister_class(RAHA_OT_RunTools)
