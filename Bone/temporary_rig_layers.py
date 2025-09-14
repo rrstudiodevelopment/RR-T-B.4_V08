@@ -763,11 +763,13 @@ class RIG_OT_import_layers_groups(bpy.types.Operator):
 # Panel UI
 # -------------------------------------------------------------------
 class VIEW3D_PT_rig_layers_panel(bpy.types.Panel):
+    """Panel UI untuk menampilkan daftar layer sementara."""
     bl_label = "Temporary Rig Layers"
     bl_idname = "VIEW3D_PT_rig_layers"
     bl_space_type = 'VIEW_3D'
     bl_region_type = 'UI'
     bl_category = 'Raha_Tools'
+    bl_order = 2
 
     def draw(self, context):
         layout = self.layout
