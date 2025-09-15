@@ -115,14 +115,14 @@ class RAHA_OT_InfoPopup(bpy.types.Operator):
             layout = self.layout
             
             col = layout.column()
-            col.label(text="update 06/09/2025 - 20:40")
+            col.label(text="update 15/09/2025 - 21:23")
             col.label(text="Raha Tools v08.2 (beta) blender 4++")            
             col.separator() 
             col.label(text="- ")
                                    
-            col.label(text="- Update Custom Axis")
-            col.label(text="- In Fake Constraint & StepSnap")
-            col.label(text="- Update Button Report")
+            col.label(text="- Temporary Rigs Layer new versi")
+#            col.label(text="- In Fake Constraint & StepSnap")
+#            col.label(text="- Update Button Report")
 #            col.label(text="- ")
 #            col.label(text="- ")
 #            col.separator()
