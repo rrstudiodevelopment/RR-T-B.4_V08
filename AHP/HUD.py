@@ -5,6 +5,7 @@ import os
 ADDONS_PATH = bpy.utils.user_resource('SCRIPTS', path="addons")
 RAHA_TOOLS_PATH = os.path.join(ADDONS_PATH, "Raha_Tools", "safe_area.png")
 RAHA_LAUNCHER_PATH = os.path.join(ADDONS_PATH, "Raha_Tools_LAUNCHER", "safe_area.png")
+AHP_Blender = os.path.join(ADDONS_PATH, "AHP-Blender-4++", "safe_area.png")
 
 if os.path.exists(RAHA_TOOLS_PATH):
     DEFAULT_SAFE_AREA_IMAGE_PATH = RAHA_TOOLS_PATH
@@ -32,7 +33,7 @@ class RAHA_OT_ActivateHUD(bpy.types.Operator):
             cams[0].select_set(True)
 
         scene.render.use_stamp = True
-        scene.render.use_stamp_render_time = False            # ✅ hanya aktifkan stamp saja
+        scene.render.use_stamp_render_time = False
 
         for area in bpy.context.screen.areas:
             if area.type == 'VIEW_3D':
@@ -144,8 +145,6 @@ class VIEW3D_PT_HUDPanel(bpy.types.Panel):
         row.operator("view3d.delete_safe_area_image", text="", icon='X')
         row.operator("view3d.toggle_safe_area", text="", icon='HIDE_OFF')
 
-
-        row = layout.row()        
         if scene.raha_show_stamp_settings:
             box = layout.box()
             col = box.column(align=True)
@@ -166,7 +165,7 @@ class VIEW3D_PT_HUDPanel(bpy.types.Panel):
             col.prop(render, "use_stamp_sequencer_strip", text="Sequencer Strip")
         
             box.prop(render, "stamp_font_size", text="Font Size")
-
+            box.prop(render, "stamp_foreground", text="Color")  # ✅ COLOR PICKER
 
 # ========== REGISTER ==========
 def register():
@@ -184,29 +183,20 @@ def register():
         description="Tampilkan pengaturan HUD stamp"
     )
     
-
     # ✅ Auto aktifkan 'burn to image'
-    bpy.context.scene.render.use_stamp = False
-    bpy.context.scene.render.stamp_font_size = 32
-        
-    bpy.context.scene.render.use_stamp_date = True
-    bpy.context.scene.render.use_stamp_time = True    
-    bpy.context.scene.render.use_stamp_frame = True
-    bpy.context.scene.render.use_stamp_lens = True
-    bpy.context.scene.render.use_stamp_scene = True
-    bpy.context.scene.render.use_stamp_camera = False
-    
-    
-    
-    
+    render = bpy.context.scene.render
+    render.use_stamp = False
+    render.stamp_font_size = 32
+    render.use_stamp_date = True
+    render.use_stamp_time = True    
+    render.use_stamp_frame = True
+    render.use_stamp_lens = True
+    render.use_stamp_scene = True
+    render.use_stamp_camera = False
+    render.use_stamp_note = True
+    render.use_stamp_filename = False
+    render.stamp_foreground = (0.700891, 0.800007, 0.647455, 1)  # ✅ Default putih
 
-    
-    bpy.context.scene.render.use_stamp_note = True
-  
-    bpy.context.scene.render.use_stamp_filename = False
-
-    
-    
     
 
 def unregister():
@@ -216,24 +206,8 @@ def unregister():
     bpy.utils.unregister_class(VIEW3D_PT_HUDPanel)
     
     del bpy.types.Scene.raha_show_stamp_settings
-
     del bpy.types.Scene.raha_hud_use_custom_path
     del bpy.types.Scene.raha_hud_custom_path
-
-    del bpy.types.Scene.use_stamp_date
-    del bpy.types.Scene.use_stamp_time
-    del bpy.types.Scene.use_stamp_render_time
-    del bpy.types.Scene.use_stamp_frame
-    del bpy.types.Scene.use_stamp_frame_range
-    del bpy.types.Scene.use_stamp_memory
-    del bpy.types.Scene.use_stamp_hostname
-    del bpy.types.Scene.use_stamp_camera
-    del bpy.types.Scene.use_stamp_lens
-    del bpy.types.Scene.use_stamp_scene
-    del bpy.types.Scene.use_stamp_marker
-    del bpy.types.Scene.use_stamp_filename
-    del bpy.types.Scene.use_stamp_sequencer_strip
-    del bpy.types.Scene.use_stamp_note
 
 if __name__ == "__main__":
     register()
