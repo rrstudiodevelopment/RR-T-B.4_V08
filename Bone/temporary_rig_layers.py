@@ -1,10 +1,10 @@
 bl_info = {
-    "name": "Raha Temporary Rig Layers + Groups (Fixed UI + Export/Import)",
+    "name": "Flexi Picker – Smart Selection & Visibility Layers for Blender",
     "author": "RAHA ANM",
     "version": (1, 0, 1),
     "blender": (4, 0, 0),
     "location": "3D View > Sidebar > Raha_Tools",
-    "description": "Temporary rig layers & groups with improved UI, kick-by-selection, join/group popup, and export/import (JSON/.py). Fixed select operator bug.",
+    "description": "Flexi Picker – Smart Selection & Visibility Layers for Blender with improved UI, kick-by-selection, join/group popup, and export/import (JSON/.py). Fixed select operator bug.",
     "category": "Rigging & Animtion",
 }
 
@@ -898,7 +898,7 @@ import bpy
 # Panel utama
 # ================================================================
 class VIEW3D_PT_rig_layers_panel(bpy.types.Panel):
-    bl_label = "Temporary Rig Layers (Currently testing)" 
+    bl_label = "Flexi Picker" 
     bl_idname = "VIEW3D_PT_rig_layers"
     bl_space_type = 'VIEW_3D'
     bl_region_type = 'UI'
