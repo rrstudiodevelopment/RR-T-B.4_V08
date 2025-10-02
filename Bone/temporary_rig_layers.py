@@ -322,21 +322,51 @@ class RIG_OT_add_to_existing_layer(bpy.types.Operator):
             self.report({'WARNING'}, "Layer not found")
             return {'CANCELLED'}
 
-        for obj in context.selected_objects:
-            exists = any(it.owner == obj.name and it.name == obj.name for it in layer.items)
-            if not exists:
-                it = layer.items.add()
-                it.owner = obj.name
-                it.name = obj.name
+        added_count = 0
 
-        arm = context.object if context.object and context.object.type == 'ARMATURE' else None
-        if arm and context.selected_pose_bones:
-            for bone in context.selected_pose_bones:
-                exists = any(it.owner == arm.name and it.name == bone.name for it in layer.items)
+        # Handle OBJECT mode selection
+        if context.mode == 'OBJECT':
+            for obj in context.selected_objects:
+                # Check if object already exists in layer
+                exists = any(it.owner == obj.name and it.name == obj.name and not it.is_bone for it in layer.items)
                 if not exists:
-                    it = layer.items.add()
-                    it.owner = arm.name
-                    it.name = bone.name
+                    item = layer.items.add()
+                    item.owner = obj.name
+                    item.name = obj.name
+                    item.is_bone = False
+                    added_count += 1
+
+        # Handle POSE mode selection (BONES)
+        elif context.mode == 'POSE' and context.object and context.object.type == 'ARMATURE':
+            armature = context.object
+            for bone in context.selected_pose_bones:
+                # Check if bone already exists in layer
+                exists = any(it.owner == armature.name and it.name == bone.name and it.is_bone for it in layer.items)
+                if not exists:
+                    item = layer.items.add()
+                    item.owner = armature.name
+                    item.name = bone.name
+                    item.is_bone = True
+                    added_count += 1
+
+        # Handle EDIT mode selection (BONES)
+        elif context.mode == 'EDIT_ARMATURE' and context.object and context.object.type == 'ARMATURE':
+            armature = context.object
+            for bone in context.selected_bones:
+                # Check if bone already exists in layer
+                exists = any(it.owner == armature.name and it.name == bone.name and it.is_bone for it in layer.items)
+                if not exists:
+                    item = layer.items.add()
+                    item.owner = armature.name
+                    item.name = bone.name
+                    item.is_bone = True
+                    added_count += 1
+
+        if added_count > 0:
+            self.report({'INFO'}, f"Added {added_count} item(s) to layer")
+        else:
+            self.report({'INFO'}, "No new items added (may already exist in layer)")
+
         return {'FINISHED'}
 
 class RIG_OT_delete_layer(bpy.types.Operator):
