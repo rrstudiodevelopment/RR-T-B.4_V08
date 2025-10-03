@@ -239,13 +239,44 @@ class RAHA_PT_PlayblastPanel(bpy.types.Panel):
         row.prop(scene, "RAHA_use_archive", text="Auto Archive")
         row = layout.row(align=True)        
         row.operator("raha.playblast", text="PLAYBLAST")
+        
+        
+class VIEW3D_HT_raha_playblast_header(bpy.types.Header):
+    bl_space_type = 'VIEW_3D'
+    bl_region_type = 'TOOL_HEADER'   # atau 'HEADER'
+    bl_label = "Raha Playblast Header"
 
+
+    def draw(self, context):
+        layout = self.layout
+        layout.operator("raha.playblast", text="PLAYBLAST", icon='RENDER_ANIMATION')
+
+           
+# --- header append method (reliable) ---
+def draw_raha_playblast_tool_header(self, context):
+    layout = self.layout
+    layout.separator()  # kasih jarak dari tombol lain
+
+    row = layout.row(align=True)
+    row.operator("raha.playblast", text="PLAYBLAST", icon='RENDER_ANIMATION')
+    row.operator("floating.open_playblast", text="", icon='TOOL_SETTINGS')       
+
+class FLOATING_OT_open_playblast(bpy.types.Operator):
+    bl_idname = "floating.open_playblast"
+    bl_label = "Playblast"
+
+    def execute(self, context):
+        bpy.ops.wm.call_panel(name="RAHA_PT_Tools_playblast", keep_open=True)
+        return {'FINISHED'}
 
 # ======================================== REGISTER =============================================
 classes = (
     RAHA_OT_Playblast,
     RAHA_PT_PlayblastPanel,
+    VIEW3D_HT_raha_playblast_header,
+    FLOATING_OT_open_playblast,       # <--- tambahkan ini
 )
+
 
 def register():
     for cls in classes:
@@ -310,6 +341,8 @@ def register():
     bpy.types.Scene.RAHA_pb_show_format = bpy.props.BoolProperty(name="", default=True)
     bpy.types.Scene.RAHA_pb_show_frame_range = bpy.props.BoolProperty(name="", default=False)
 
+    bpy.types.VIEW3D_HT_tool_header.append(draw_raha_playblast_tool_header)  
+
 def unregister():
     for cls in reversed(classes):
         bpy.utils.unregister_class(cls)
@@ -319,5 +352,19 @@ def unregister():
         if hasattr(bpy.types.Scene, p):
             delattr(bpy.types.Scene, p)
 
+
+    # hapus append dulu supaya bersih
+    if draw_raha_playblast_header in bpy.types.VIEW3D_HT_header.__dict__.get("draw", ()):
+        pass
+    try:
+        bpy.types.VIEW3D_HT_tool_header.remove(draw_raha_playblast_tool_header)
+    except Exception:
+        # safe ignore jika belum terpasang
+        pass
+
+    for cls in reversed(classes):
+        bpy.utils.unregister_class(cls)
+        
+        
 if __name__ == "__main__":
     register()
