@@ -1,12 +1,4 @@
-bl_info = {
-    "name": "Flexi Picker – Smart Selection & Visibility Layers for Blender",
-    "author": "RAHA ANM",
-    "version": (1, 0, 1),
-    "blender": (4, 0, 0),
-    "location": "3D View > Sidebar > Raha_Tools",
-    "description": "Flexi Picker – Smart Selection & Visibility Layers for Blender with improved UI, kick-by-selection, join/group popup, and export/import (JSON/.py). Fixed select operator bug.",
-    "category": "Rigging & Animtion",
-}
+
 
 import bpy
 import json
@@ -448,7 +440,7 @@ class RIG_OT_kick_selected_from_layer(bpy.types.Operator):
         return {'FINISHED'}
 
 # -------------------------------------------------------------------
-# Select operator (fixed proper class)
+# Select dan Deselect operator (fixed proper class)
 # -------------------------------------------------------------------
 class RIG_OT_select_layer_items(bpy.types.Operator):
     bl_idname = "rig.select_layer_items"
@@ -511,6 +503,42 @@ class RIG_OT_select_layer_items(bpy.types.Operator):
                     obj.select_set(True)
                     context.view_layer.objects.active = obj
 
+        return {'FINISHED'}
+
+
+class RIG_OT_deselect_layer_items(bpy.types.Operator):
+    """Deselect all items in the chosen layer"""
+    bl_idname = "rig.deselect_layer_items"
+    bl_label = "Deselect Layer Items"
+    bl_options = {'REGISTER', 'UNDO'}
+
+    layer_index: bpy.props.IntProperty()
+
+    def execute(self, context):
+        layer = get_layer_by_index(context.scene, self.layer_index)
+        if not layer:
+            self.report({'WARNING'}, "Layer not found")
+            return {'CANCELLED'}
+
+        # deteksi apakah layer ini mengandung bone
+        has_bone = any(it.is_bone for it in layer.items)
+
+        if has_bone:
+            # Deselect bones
+            arm = bpy.context.object if bpy.context.object and bpy.context.object.type == 'ARMATURE' else None
+            if arm and arm.mode == 'POSE':
+                for it in layer.items:
+                    pb = arm.pose.bones.get(it.name)
+                    if pb:
+                        pb.bone.select = False
+        else:
+            # Deselect objects
+            for it in layer.items:
+                obj = bpy.data.objects.get(it.name)
+                if obj:
+                    obj.select_set(False)
+
+        self.report({'INFO'}, f"Deselected all items in layer '{layer.name}'")
         return {'FINISHED'}
 
 
@@ -968,6 +996,8 @@ class VIEW3D_PT_rig_layers_panel(bpy.types.Panel):
         # Header controls
         # -----------------------------------------------------------------
         row = layout.row(align=True)
+
+        
         safe_op_set(row, "view3d.isolate_toggle", None, text="Toggle Isolate View", icon='HIDE_OFF')
 
         layout.separator()
@@ -999,7 +1029,8 @@ class VIEW3D_PT_rig_layers_panel(bpy.types.Panel):
                         row = box.row(align=True)
 
                         safe_op_set(row, "rig.select_layer_items", {"layer_index": i}, text=layer.name, icon='RESTRICT_SELECT_OFF')
-
+                        safe_op_set(row, "rig.deselect_layer_items", {"layer_index": i}, text="", icon='RESTRICT_SELECT_ON')  
+                                             
                         op = row.operator(
                             "rig.toggle_layer_visibility",
                             text="",
@@ -1024,6 +1055,7 @@ class VIEW3D_PT_rig_layers_panel(bpy.types.Panel):
                             safe_op_set(r, "rig.join_group_from_layer", {"layer_index": i}, text="", icon='GROUP')
                             safe_op_set(r, "rig.add_to_existing_layer", {"layer_index": i}, text="", icon='ADD')
                             safe_op_set(r, "rig.kick_selected_from_layer", {"layer_index": i}, text="", icon='X')
+                             
 
                             # export mark property safeguard
                             if not hasattr(layer, "export_mark"):
@@ -1080,7 +1112,10 @@ class VIEW3D_PT_rig_layers_panel(bpy.types.Panel):
                                 layer_ref = scene.temp_layers.layers[li]
 
                                 row = box.row(align=True)
-                                safe_op_set(row, "rig.select_layer_items", {"layer_index": li}, text=layer_ref.name, icon='RESTRICT_SELECT_OFF')
+                                safe_op_set(row, "rig.select_layer_items", {"layer_index": li}, text="", icon='RESTRICT_SELECT_OFF')
+                                safe_op_set(row, "rig.deselect_layer_items", {"layer_index": li}, text="", icon='RESTRICT_SELECT_ON')
+                                
+
                                 safe_op_set(row, "rig.toggle_layer_visibility", {"layer_index": li}, text="", icon='HIDE_OFF' if getattr(layer_ref, "is_visible", True) else 'HIDE_ON')
 
                                 # ensure per-layer group toggle property exists
@@ -1158,6 +1193,8 @@ classes = (
     RIG_OT_kick_selected_from_layer,
 
     RIG_OT_select_layer_items,
+    RIG_OT_deselect_layer_items,
+
     RIG_OT_remove_item_from_layer,
 
     RIG_OT_join_group_from_layer,
@@ -1198,4 +1235,4 @@ def unregister():
             pass
 
 if __name__ == "__main__":
-    register()
+    register() 
