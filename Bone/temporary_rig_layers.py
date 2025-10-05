@@ -890,16 +890,11 @@ class RIG_OT_export_layers_groups(bpy.types.Operator):
         context.window_manager.fileselect_add(self)
         return {'RUNNING_MODAL'}
 
-class RIG_OT_import_layers_groups(bpy.types.Operator):
-    bl_idname = "rig.import_layers_groups"
+class RIG_OT_choose_import_mode(bpy.types.Operator):
+    bl_idname = "rig.choose_import_mode"
     bl_label = "Import Layers/Groups"
-    bl_description = "Import layers/groups from JSON or .py exported data"
-    bl_options = {'REGISTER', 'UNDO'}
+    bl_description = "Choose import mode before importing JSON or .py data"
 
-    filepath: bpy.props.StringProperty(subtype="FILE_PATH")
-    filter_glob: bpy.props.StringProperty(default="*.json;*.py", options={'HIDDEN'})
-    
-    # FIX: Add import options
     import_mode: bpy.props.EnumProperty(
         name="Import Mode",
         items=[
@@ -909,7 +904,60 @@ class RIG_OT_import_layers_groups(bpy.types.Operator):
         default='APPEND'
     )
 
+    def draw(self, context):
+        layout = self.layout
+        layout.label(text="Choose Import Mode:")
+        layout.prop(self, "import_mode", expand=True)
+
     def execute(self, context):
+        # Setelah user pilih mode, buka file browser dengan mengirim import_mode
+        bpy.ops.rig.import_layers_groups('INVOKE_DEFAULT', import_mode=self.import_mode)
+        return {'FINISHED'}
+
+    def invoke(self, context, event):
+        return context.window_manager.invoke_props_dialog(self)
+
+
+class RIG_OT_import_layers_groups(bpy.types.Operator):
+    bl_idname = "rig.import_layers_groups"
+    bl_label = "Import Layers/Groups"
+    bl_description = "Import layers/groups from JSON or .py exported data"
+    bl_options = {'REGISTER', 'UNDO'}
+
+    filepath: bpy.props.StringProperty(subtype="FILE_PATH")
+    filter_glob: bpy.props.StringProperty(default="*.json;*.py", options={'HIDDEN'})
+    
+    import_mode: bpy.props.EnumProperty(
+        name="Import Mode",
+        items=[
+            ('REPLACE', "Replace All", "Replace existing layers and groups"),
+            ('APPEND', "Append", "Add to existing layers and groups"),
+        ],
+        default='APPEND'
+    )
+
+    def invoke(self, context, event):
+        # Jika import_mode sudah di-set dari operator sebelumnya, langsung buka file browser
+        if hasattr(self, 'import_mode') and self.import_mode:
+            context.window_manager.fileselect_add(self)
+            return {'RUNNING_MODAL'}
+        else:
+            # Jika tidak, tampilkan dialog pilihan mode
+            return context.window_manager.invoke_props_dialog(self)
+
+    def draw(self, context):
+        layout = self.layout
+        layout.prop(self, "import_mode")
+
+    def execute(self, context):
+        # Langsung proses file yang dipilih
+        return self.load_file(context)
+
+    def load_file(self, context):
+        if not self.filepath:
+            self.report({'ERROR'}, "No file selected")
+            return {'CANCELLED'}
+            
         fp = bpy.path.abspath(self.filepath)
         if not os.path.exists(fp):
             self.report({'ERROR'}, "File not found")
@@ -935,24 +983,26 @@ class RIG_OT_import_layers_groups(bpy.types.Operator):
             return {'CANCELLED'}
 
         scene = context.scene
+
         if not hasattr(scene, "temp_layers"):
             scene.temp_layers = bpy.props.PointerProperty(type=RigLayerManager)
         if not hasattr(scene, "temp_groups"):
             scene.temp_groups = bpy.props.PointerProperty(type=RigGroupManager)
 
-        # FIX: Clear existing data if replace mode
+        # Hapus data lama jika mode REPLACE
         if self.import_mode == 'REPLACE':
             scene.temp_layers.layers.clear()
             scene.temp_groups.groups.clear()
 
-        # FIX: Improved layer import with validation
         imported_layer_indices = {}
         
+        # =====================
+        # IMPORT LAYERS
+        # =====================
         for ld in data.get("layers", []):
             name = ld.get("name", "Imported Layer")
             items_data = ld.get("items", [])
             
-            # Check if layer already exists (by name)
             existing_layer_index = None
             for i, existing_layer in enumerate(scene.temp_layers.layers):
                 if existing_layer.name == name:
@@ -960,23 +1010,19 @@ class RIG_OT_import_layers_groups(bpy.types.Operator):
                     break
             
             if existing_layer_index is not None and self.import_mode == 'APPEND':
-                # Append to existing layer
                 layer = scene.temp_layers.layers[existing_layer_index]
                 imported_layer_indices[name] = existing_layer_index
             else:
-                # Create new layer
                 layer = scene.temp_layers.layers.add()
                 layer.name = name
                 layer.is_visible = bool(ld.get("is_visible", True))
                 imported_layer_indices[name] = len(scene.temp_layers.layers) - 1
 
-            # FIX: Import items with proper bone/data validation
             for item_data in items_data:
                 owner_name = item_data.get("owner", "")
                 item_name = item_data.get("name", "")
                 is_bone = item_data.get("is_bone", False)
                 
-                # Check if item already exists in layer
                 item_exists = False
                 for existing_item in layer.items:
                     if (existing_item.owner == owner_name and 
@@ -986,9 +1032,7 @@ class RIG_OT_import_layers_groups(bpy.types.Operator):
                         break
                 
                 if not item_exists:
-                    # FIX: Validate that the referenced object/bone exists
                     if is_bone:
-                        # Check if armature and bone exist
                         armature = bpy.data.objects.get(owner_name)
                         if armature and armature.type == 'ARMATURE':
                             bone = armature.data.bones.get(item_name)
@@ -1002,7 +1046,6 @@ class RIG_OT_import_layers_groups(bpy.types.Operator):
                         else:
                             print(f"Warning: Armature '{owner_name}' not found")
                     else:
-                        # Check if object exists
                         obj = bpy.data.objects.get(item_name)
                         if obj:
                             new_item = layer.items.add()
@@ -1012,11 +1055,11 @@ class RIG_OT_import_layers_groups(bpy.types.Operator):
                         else:
                             print(f"Warning: Object '{item_name}' not found")
 
-        # FIX: Improved group import
+        # =====================
+        # IMPORT GROUPS
+        # =====================
         for gd in data.get("groups", []):
             gname = gd.get("name", "Imported Group")
-            
-            # Check if group already exists
             group_exists = False
             target_group = None
             
@@ -1032,22 +1075,18 @@ class RIG_OT_import_layers_groups(bpy.types.Operator):
             
             target_group.is_visible = bool(gd.get("is_visible", True))
             
-            # FIX: Handle both old (layer names) and new (layer indices) format
             layer_indices = gd.get("layer_indices", [])
             layer_names = gd.get("layers", [])
             
-            # Clear existing layer indices if in replace mode
             if self.import_mode == 'REPLACE' and not group_exists:
                 target_group.layer_indices.clear()
             
-            # Import layer indices (new format)
             for layer_index in layer_indices:
                 if 0 <= layer_index < len(scene.temp_layers.layers):
                     if not any(idx.index == layer_index for idx in target_group.layer_indices):
                         new_idx = target_group.layer_indices.add()
                         new_idx.index = layer_index
             
-            # Import layer names (old format - for backward compatibility)
             for layer_name in layer_names:
                 if layer_name in imported_layer_indices:
                     layer_index = imported_layer_indices[layer_name]
@@ -1061,13 +1100,12 @@ class RIG_OT_import_layers_groups(bpy.types.Operator):
         self.report({'INFO'}, f"Imported {imported_layers_count} layers and {imported_groups_count} groups")
         return {'FINISHED'}
 
-    def invoke(self, context, event):
-        # FIX: Add options for import mode
-        return context.window_manager.invoke_props_dialog(self)
+    def check(self, context):
+        return True
 
-    def draw(self, context):
-        layout = self.layout
-        layout.prop(self, "import_mode")
+    def cancel(self, context):
+        pass
+
 
 # -------------------------------------------------------------------
 # 
@@ -1234,7 +1272,9 @@ class VIEW3D_PT_rig_layers_panel(bpy.types.Panel):
         safe_op(row, "rig.add_selection_to_layer", text="Add Sel", icon='ADD')
         safe_op(row, "rig.add_group", text="New Group", icon='GROUP')
         safe_op(row, "rig.export_layers_groups", text="", icon='EXPORT')
-        safe_op(row, "rig.import_layers_groups", text="", icon='IMPORT')
+#        safe_op(row, "rig.import_layers_groups", text="", icon='IMPORT')
+        safe_op(row, "rig.choose_import_mode", text="", icon='IMPORT')        
+       
 
         layout.separator(factor=1.2)
 
@@ -1344,10 +1384,12 @@ class VIEW3D_PT_rig_layers_panel(bpy.types.Panel):
                                     sub_box = layer_box.box()
                                     sub_box.scale_y = 0.9
                                     r = sub_box.row(align=True)
+                                    safe_op(r, "rig.delete_layer", {"layer_index": li}, text="", icon='TRASH')                                                       
                                     safe_op(r, "rig.rename_layer", {"layer_index": li}, text="", icon='GREASEPENCIL')
                                     safe_op(r, "rig.add_to_existing_layer", {"layer_index": li}, text="", icon='ADD')
                                     safe_op(r, "rig.kick_selected_from_layer", {"layer_index": li}, text="", icon='X')
                                     safe_op(r, "rig.remove_layer_from_group", {"group_index": g_index, "entry_index": entry_idx}, text="", icon='TRACKING_CLEAR_FORWARDS')
+                                    
 
                                     if len(group.layer_indices) > 1:
                                         r.separator()
@@ -1422,6 +1464,7 @@ classes = (
 
     RIG_OT_export_layers_groups,
     RIG_OT_import_layers_groups,
+    RIG_OT_choose_import_mode,    
 
     VIEW3D_PT_rig_layers_panel,
     RIG_OT_move_layer_up,      # Tambahkan ini
