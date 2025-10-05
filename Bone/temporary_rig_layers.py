@@ -11,7 +11,7 @@ import os
 class TemporaryRigItem(bpy.types.PropertyGroup):
     owner: bpy.props.StringProperty(name="Owner")   # object pemilik
     name: bpy.props.StringProperty(name="Item Name") # object/bone name
-    is_bone: bpy.props.BoolProperty(default=False)   # true kalau bone
+    is_bone: bpy.props.BoolProperty(default=False)   # true kalau bone - FIX: This is correct
 
 
 class TemporaryRigLayer(bpy.types.PropertyGroup):
@@ -77,6 +77,8 @@ class RigGroupManager(bpy.types.PropertyGroup):
 # -------------------------------------------------------------------
 # Helpers
 # -------------------------------------------------------------------
+
+
 def get_layer_by_index(scene, layer_index):
     if not hasattr(scene, "temp_layers"):
         return None
@@ -112,6 +114,16 @@ def ensure_pose_mode_for_object(obj):
         return True
     except Exception:
         return False
+    
+def validate_import_item(owner_name, item_name, is_bone):
+    """Validate if an item exists in the current scene"""
+    if is_bone:
+        armature = bpy.data.objects.get(owner_name)
+        if not armature or armature.type != 'ARMATURE':
+            return False
+        return item_name in armature.data.bones
+    else:
+        return item_name in bpy.data.objects    
 
 # -------------------------------------------------------------------
 # Operators - Isolate (preserve behavior)
@@ -792,6 +804,9 @@ class RIG_OT_rename_group(bpy.types.Operator):
 # -------------------------------------------------------------------
 # Export / Import Operators
 # -------------------------------------------------------------------
+# -------------------------------------------------------------------
+# Export / Import Operators - FIXED VERSION
+# -------------------------------------------------------------------
 class RIG_OT_export_layers_groups(bpy.types.Operator):
     bl_idname = "rig.export_layers_groups"
     bl_label = "Export Layers/Groups"
@@ -811,29 +826,47 @@ class RIG_OT_export_layers_groups(bpy.types.Operator):
             any_mark = any(l.export_mark for l in scene.temp_layers.layers)
             for l in scene.temp_layers.layers:
                 if l.export_mark or not any_mark:
+                    # FIX: Include is_bone information
+                    items_data = []
+                    for it in l.items:
+                        item_data = {
+                            "owner": it.owner,
+                            "name": it.name,
+                            "is_bone": it.is_bone  # FIX: Add this
+                        }
+                        items_data.append(item_data)
+                    
                     layers_out.append({
                         "name": l.name,
                         "is_visible": bool(l.is_visible),
-                        "items": [{"owner": it.owner, "name": it.name} for it in l.items],
+                        "items": items_data,  # Use the fixed data
                     })
 
         if hasattr(scene, "temp_groups"):
             any_mark_g = any(g.export_mark for g in scene.temp_groups.groups)
             for g in scene.temp_groups.groups:
                 if g.export_mark or not any_mark_g:
-                    layer_names = []
+                    # FIX: Store layer indices instead of names for consistency
+                    layer_indices = []
                     for idx in g.layer_indices:
-                        li = idx.index
-                        layer = get_layer_by_index(scene, li)
-                        if layer:
-                            layer_names.append(layer.name)
+                        layer_indices.append(idx.index)
+                    
                     groups_out.append({
                         "name": g.name,
                         "is_visible": bool(g.is_visible),
-                        "layers": layer_names,
+                        "layer_indices": layer_indices,  # FIX: Store indices
                     })
 
-        data = {"layers": layers_out, "groups": groups_out}
+        data = {
+            "layers": layers_out, 
+            "groups": groups_out,
+            "metadata": {  # FIX: Add metadata for versioning
+                "version": "1.1",
+                "blender_version": bpy.app.version_string,
+                "export_time": str(bpy.context.scene.frame_current)
+            }
+        }
+        
         fp = bpy.path.abspath(self.filepath)
         ext = os.path.splitext(fp)[1].lower()
         try:
@@ -849,7 +882,7 @@ class RIG_OT_export_layers_groups(bpy.types.Operator):
             self.report({'ERROR'}, f"Failed to write file: {e}")
             return {'CANCELLED'}
 
-        self.report({'INFO'}, f"Exported to {fp}")
+        self.report({'INFO'}, f"Exported {len(layers_out)} layers and {len(groups_out)} groups to {fp}")
         return {'FINISHED'}
 
     def invoke(self, context, event):
@@ -865,12 +898,23 @@ class RIG_OT_import_layers_groups(bpy.types.Operator):
 
     filepath: bpy.props.StringProperty(subtype="FILE_PATH")
     filter_glob: bpy.props.StringProperty(default="*.json;*.py", options={'HIDDEN'})
+    
+    # FIX: Add import options
+    import_mode: bpy.props.EnumProperty(
+        name="Import Mode",
+        items=[
+            ('REPLACE', "Replace All", "Replace existing layers and groups"),
+            ('APPEND', "Append", "Add to existing layers and groups"),
+        ],
+        default='APPEND'
+    )
 
     def execute(self, context):
         fp = bpy.path.abspath(self.filepath)
         if not os.path.exists(fp):
             self.report({'ERROR'}, "File not found")
             return {'CANCELLED'}
+        
         ext = os.path.splitext(fp)[1].lower()
         try:
             if ext == ".py":
@@ -896,67 +940,262 @@ class RIG_OT_import_layers_groups(bpy.types.Operator):
         if not hasattr(scene, "temp_groups"):
             scene.temp_groups = bpy.props.PointerProperty(type=RigGroupManager)
 
-        name_to_index = {}
+        # FIX: Clear existing data if replace mode
+        if self.import_mode == 'REPLACE':
+            scene.temp_layers.layers.clear()
+            scene.temp_groups.groups.clear()
+
+        # FIX: Improved layer import with validation
+        imported_layer_indices = {}
+        
         for ld in data.get("layers", []):
-            name = ld.get("name", "Layer")
-            found_idx = None
-            for i, existing in enumerate(scene.temp_layers.layers):
-                if existing.name == name:
-                    found_idx = i
+            name = ld.get("name", "Imported Layer")
+            items_data = ld.get("items", [])
+            
+            # Check if layer already exists (by name)
+            existing_layer_index = None
+            for i, existing_layer in enumerate(scene.temp_layers.layers):
+                if existing_layer.name == name:
+                    existing_layer_index = i
                     break
-            if found_idx is None:
-                nl = scene.temp_layers.layers.add()
-                nl.name = name
-                nl.is_visible = bool(ld.get("is_visible", True))
-                for it in ld.get("items", []):
-                    itn = nl.items.add()
-                    itn.owner = it.get("owner", "")
-                    itn.name = it.get("name", "")
-                new_index = len(scene.temp_layers.layers) - 1
-                name_to_index[name] = new_index
+            
+            if existing_layer_index is not None and self.import_mode == 'APPEND':
+                # Append to existing layer
+                layer = scene.temp_layers.layers[existing_layer_index]
+                imported_layer_indices[name] = existing_layer_index
             else:
-                existing = scene.temp_layers.layers[found_idx]
-                for it in ld.get("items", []):
-                    exists = any(x.owner == it.get("owner", "") and x.name == it.get("name", "") for x in existing.items)
-                    if not exists:
-                        e = existing.items.add()
-                        e.owner = it.get("owner", "")
-                        e.name = it.get("name", "")
-                name_to_index[name] = found_idx
+                # Create new layer
+                layer = scene.temp_layers.layers.add()
+                layer.name = name
+                layer.is_visible = bool(ld.get("is_visible", True))
+                imported_layer_indices[name] = len(scene.temp_layers.layers) - 1
 
+            # FIX: Import items with proper bone/data validation
+            for item_data in items_data:
+                owner_name = item_data.get("owner", "")
+                item_name = item_data.get("name", "")
+                is_bone = item_data.get("is_bone", False)
+                
+                # Check if item already exists in layer
+                item_exists = False
+                for existing_item in layer.items:
+                    if (existing_item.owner == owner_name and 
+                        existing_item.name == item_name and 
+                        existing_item.is_bone == is_bone):
+                        item_exists = True
+                        break
+                
+                if not item_exists:
+                    # FIX: Validate that the referenced object/bone exists
+                    if is_bone:
+                        # Check if armature and bone exist
+                        armature = bpy.data.objects.get(owner_name)
+                        if armature and armature.type == 'ARMATURE':
+                            bone = armature.data.bones.get(item_name)
+                            if bone:
+                                new_item = layer.items.add()
+                                new_item.owner = owner_name
+                                new_item.name = item_name
+                                new_item.is_bone = True
+                            else:
+                                print(f"Warning: Bone '{item_name}' not found in armature '{owner_name}'")
+                        else:
+                            print(f"Warning: Armature '{owner_name}' not found")
+                    else:
+                        # Check if object exists
+                        obj = bpy.data.objects.get(item_name)
+                        if obj:
+                            new_item = layer.items.add()
+                            new_item.owner = owner_name
+                            new_item.name = item_name
+                            new_item.is_bone = False
+                        else:
+                            print(f"Warning: Object '{item_name}' not found")
+
+        # FIX: Improved group import
         for gd in data.get("groups", []):
-            gname = gd.get("name", "Group")
-            g = scene.temp_groups.groups.add()
-            g.name = gname
-            g.is_visible = bool(gd.get("is_visible", True))
-            for lname in gd.get("layers", []):
-                li = name_to_index.get(lname)
-                if li is None:
-                    for i, ex in enumerate(scene.temp_layers.layers):
-                        if ex.name == lname:
-                            li = i
-                            break
-                if li is not None:
-                    new_idx = g.layer_indices.add()
-                    new_idx.index = li
+            gname = gd.get("name", "Imported Group")
+            
+            # Check if group already exists
+            group_exists = False
+            target_group = None
+            
+            for existing_group in scene.temp_groups.groups:
+                if existing_group.name == gname:
+                    group_exists = True
+                    target_group = existing_group
+                    break
+            
+            if not group_exists:
+                target_group = scene.temp_groups.groups.add()
+                target_group.name = gname
+            
+            target_group.is_visible = bool(gd.get("is_visible", True))
+            
+            # FIX: Handle both old (layer names) and new (layer indices) format
+            layer_indices = gd.get("layer_indices", [])
+            layer_names = gd.get("layers", [])
+            
+            # Clear existing layer indices if in replace mode
+            if self.import_mode == 'REPLACE' and not group_exists:
+                target_group.layer_indices.clear()
+            
+            # Import layer indices (new format)
+            for layer_index in layer_indices:
+                if 0 <= layer_index < len(scene.temp_layers.layers):
+                    if not any(idx.index == layer_index for idx in target_group.layer_indices):
+                        new_idx = target_group.layer_indices.add()
+                        new_idx.index = layer_index
+            
+            # Import layer names (old format - for backward compatibility)
+            for layer_name in layer_names:
+                if layer_name in imported_layer_indices:
+                    layer_index = imported_layer_indices[layer_name]
+                    if not any(idx.index == layer_index for idx in target_group.layer_indices):
+                        new_idx = target_group.layer_indices.add()
+                        new_idx.index = layer_index
 
-        self.report({'INFO'}, "Imported layers & groups")
+        imported_layers_count = len(data.get("layers", []))
+        imported_groups_count = len(data.get("groups", []))
+        
+        self.report({'INFO'}, f"Imported {imported_layers_count} layers and {imported_groups_count} groups")
         return {'FINISHED'}
 
     def invoke(self, context, event):
-        context.window_manager.fileselect_add(self)
-        return {'RUNNING_MODAL'}
+        # FIX: Add options for import mode
+        return context.window_manager.invoke_props_dialog(self)
+
+    def draw(self, context):
+        layout = self.layout
+        layout.prop(self, "import_mode")
 
 # -------------------------------------------------------------------
-# Panel UI
+# 
 # -------------------------------------------------------------------
-import bpy
+# -------------------------------------------------------------------
+class RIG_OT_move_layer_up(bpy.types.Operator):
+    """Move layer up in global or group"""
+    bl_idname = "rig.move_layer_up"
+    bl_label = "Move Layer Up"
+    bl_options = {'REGISTER', 'UNDO'}
+    
+    layer_index: bpy.props.IntProperty()
+    group_index: bpy.props.IntProperty(default=-1)
+
+    def execute(self, context):
+        scene = context.scene
+        if not hasattr(scene, "temp_layers"):
+            return {'CANCELLED'}
+
+        # Jika dari GROUP
+        if self.group_index >= 0 and hasattr(scene, "temp_groups"):
+            groups = scene.temp_groups.groups
+            if 0 <= self.group_index < len(groups):
+                group = groups[self.group_index]
+                entries = group.layer_indices
+                # cari posisi layer_index dalam group ini
+                pos = next((i for i, e in enumerate(entries) if e.index == self.layer_index), -1)
+                if pos > 0:
+                    entries.move(pos, pos - 1)
+                    return {'FINISHED'}
+                else:
+                    return {'CANCELLED'}
+
+        # Jika dari GLOBAL
+        layers = scene.temp_layers.layers
+        if self.layer_index <= 0 or self.layer_index >= len(layers):
+            return {'CANCELLED'}
+
+        layers.move(self.layer_index, self.layer_index - 1)
+        return {'FINISHED'}
+
+
+class RIG_OT_move_layer_down(bpy.types.Operator):
+    """Move layer down in global or group"""
+    bl_idname = "rig.move_layer_down"
+    bl_label = "Move Layer Down"
+    bl_options = {'REGISTER', 'UNDO'}
+    
+    layer_index: bpy.props.IntProperty()
+    group_index: bpy.props.IntProperty(default=-1)
+
+    def execute(self, context):
+        scene = context.scene
+        if not hasattr(scene, "temp_layers"):
+            return {'CANCELLED'}
+
+        # Jika dari GROUP
+        if self.group_index >= 0 and hasattr(scene, "temp_groups"):
+            groups = scene.temp_groups.groups
+            if 0 <= self.group_index < len(groups):
+                group = groups[self.group_index]
+                entries = group.layer_indices
+                pos = next((i for i, e in enumerate(entries) if e.index == self.layer_index), -1)
+                if 0 <= pos < len(entries) - 1:
+                    entries.move(pos, pos + 1)
+                    return {'FINISHED'}
+                else:
+                    return {'CANCELLED'}
+
+        # Jika dari GLOBAL
+        layers = scene.temp_layers.layers
+        if self.layer_index < 0 or self.layer_index >= len(layers) - 1:
+            return {'CANCELLED'}
+
+        layers.move(self.layer_index, self.layer_index + 1)
+        return {'FINISHED'}
+
+
+class RIG_OT_move_group_up(bpy.types.Operator):
+    """Move group up"""
+    bl_idname = "rig.move_group_up"
+    bl_label = "Move Group Up"
+    bl_options = {'REGISTER', 'UNDO'}
+    
+    group_index: bpy.props.IntProperty()
+
+    def execute(self, context):
+        scene = context.scene
+        if not hasattr(scene, "temp_groups"):
+            return {'CANCELLED'}
+            
+        groups = scene.temp_groups.groups
+        if self.group_index <= 0 or self.group_index >= len(groups):
+            return {'CANCELLED'}
+
+        groups.move(self.group_index, self.group_index - 1)
+        return {'FINISHED'}
+
+
+class RIG_OT_move_group_down(bpy.types.Operator):
+    """Move group down"""
+    bl_idname = "rig.move_group_down"
+    bl_label = "Move Group Down"
+    bl_options = {'REGISTER', 'UNDO'}
+    
+    group_index: bpy.props.IntProperty()
+
+    def execute(self, context):
+        scene = context.scene
+        if not hasattr(scene, "temp_groups"):
+            return {'CANCELLED'}
+            
+        groups = scene.temp_groups.groups
+        if self.group_index < 0 or self.group_index >= len(groups) - 1:
+            return {'CANCELLED'}
+
+        groups.move(self.group_index, self.group_index + 1)
+        return {'FINISHED'}
+
 
 # ================================================================
 # Panel utama
 # ================================================================
+# ================================================================
+# Modern UI Panel: Flexi Picker
+# ================================================================
 class VIEW3D_PT_rig_layers_panel(bpy.types.Panel):
-    bl_label = "Flexi Picker" 
+    bl_label = "Flexi Picker"
     bl_idname = "VIEW3D_PT_rig_layers"
     bl_space_type = 'VIEW_3D'
     bl_region_type = 'UI'
@@ -966,189 +1205,163 @@ class VIEW3D_PT_rig_layers_panel(bpy.types.Panel):
     def draw(self, context):
         layout = self.layout
         scene = context.scene
+        layout.use_property_split = False
+        layout.use_property_decorate = False
 
-        # helper: create operator UI safely and set properties if operator exists
-        def safe_op_set(container, idname, props=None, **op_kwargs):
-            """
-            container: layout.row() / layout.box() etc
-            idname: operator idname string
-            props: dict of properties to set on the operator instance (e.g. {"layer_index": i})
-            op_kwargs: kwargs forwarded to container.operator (text=..., icon=...)
-            """
+        # ============================================================
+        # Helper for safe operator
+        # ============================================================
+        def safe_op(container, idname, props=None, **kwargs):
             try:
-                op = container.operator(idname, **op_kwargs)
-            except Exception as e:
-                # operator call itself failed (rare)
-                print(f"[Raha UI] failed to call operator {idname}: {e}")
-                return None
-            if op is None:
-                print(f"[Raha UI] operator not found: {idname}")
-                return None
-            if props:
-                for k, v in props.items():
-                    try:
+                op = container.operator(idname, **kwargs)
+                if props:
+                    for k, v in props.items():
                         setattr(op, k, v)
-                    except Exception as e:
-                        print(f"[Raha UI] failed to set prop {k} on {idname}: {e}")
-            return op
+                return op
+            except Exception as e:
+                print(f"[Flexi Picker UI] Operator failed: {idname} → {e}")
+                return None
 
-        # -----------------------------------------------------------------
-        # Header controls
-        # -----------------------------------------------------------------
+        # ============================================================
+        # Header Section
+        # ============================================================
+        header = layout.row(align=True)
+        header.scale_y = 1.1
+        header.label(text="Quick Actions", icon='OUTLINER_COLLECTION')
+
         row = layout.row(align=True)
+        safe_op(row, "view3d.isolate_toggle", text="Isolate", icon='HIDE_OFF')
+        safe_op(row, "rig.add_selection_to_layer", text="Add Sel", icon='ADD')
+        safe_op(row, "rig.add_group", text="New Group", icon='GROUP')
+        safe_op(row, "rig.export_layers_groups", text="", icon='EXPORT')
+        safe_op(row, "rig.import_layers_groups", text="", icon='IMPORT')
 
-        
-        safe_op_set(row, "view3d.isolate_toggle", None, text="Toggle Isolate View", icon='HIDE_OFF')
+        layout.separator(factor=1.2)
 
-        layout.separator()
-        row = layout.row(align=True)
-        safe_op_set(row, "rig.add_selection_to_layer", None, text="Add Selection", icon='ADD')
-        safe_op_set(row, "rig.add_group", None, text="+ Add Group", icon='GROUP')
-        safe_op_set(row, "rig.export_layers_groups", None, text="", icon='EXPORT')
-        safe_op_set(row, "rig.import_layers_groups", None, text="", icon='IMPORT')
-#        layout.separator()
-
-        # -----------------------------------------------------------------
-        # GLOBAL LAYERS (exclude those inside groups)
-        # -----------------------------------------------------------------
+        # ============================================================
+        # Global Layers
+        # ============================================================
         if hasattr(scene, "temp_layers") and scene.temp_layers.layers:
             visible_globals = []
             for i, layer in enumerate(scene.temp_layers.layers):
                 try:
-                    if not layer_is_in_any_group(scene, i):
-                        visible_globals.append((i, layer))
-                except Exception as e:
-                    print("[Raha UI] layer_is_in_any_group error:", e)
-                    continue
+                    if 'layer_is_in_any_group' in globals() and layer_is_in_any_group(scene, i):
+                        continue
+                    visible_globals.append((i, layer))
+                except:
+                    visible_globals.append((i, layer))
 
             if visible_globals:
-                layout.label(text="Layers (global):")
+                col = layout.column()
+                col.label(text="Global Layers", icon='LAYER_ACTIVE')
+
                 for i, layer in visible_globals:
-                    try:
-                        box = layout.box()
-                        row = box.row(align=True)
+                    box = col.box()
+                    box.use_property_split = False
 
-                        safe_op_set(row, "rig.select_layer_items", {"layer_index": i}, text=layer.name, icon='RESTRICT_SELECT_OFF')
-                        safe_op_set(row, "rig.deselect_layer_items", {"layer_index": i}, text="", icon='RESTRICT_SELECT_ON')  
-                                             
-                        op = row.operator(
-                            "rig.toggle_layer_visibility",
-                            text="",
-                            icon='HIDE_OFF' if layer.is_visible else 'HIDE_ON'
-                        )
-                        op.layer_index = i
+                    row = box.row(align=True)
+                    row.scale_y = 1.2
+                    safe_op(row, "rig.select_layer_items", {"layer_index": i}, text=layer.name, icon='RESTRICT_SELECT_OFF')
+                    safe_op(row, "rig.toggle_layer_visibility", {"layer_index": i}, text="", 
+                            icon='HIDE_OFF' if getattr(layer, "is_visible", True) else 'HIDE_ON')
+                    safe_op(row, "rig.deselect_layer_items", {"layer_index": i}, text="", icon='RESTRICT_SELECT_ON')
+                    row.prop(layer, "show_extra_buttons", text="", icon='SETTINGS')
 
-                        # show/hide extra buttons toggle (per-layer)
-                        # make sure property exists; use getattr fallback to avoid crash
-                        if not hasattr(layer, "show_extra_buttons"):
-                            # silently ensure property exists (this should be defined in PropertyGroup ideally)
-                            setattr(layer, "show_extra_buttons", False)
+                    # --- Extra controls
+                    if getattr(layer, "show_extra_buttons", False):
+                        sub = box.column(align=True)
+                        sub.separator(factor=0.3)
+                        r = sub.row(align=True)
+                        safe_op(r, "rig.rename_layer", {"layer_index": i}, text="", icon='GREASEPENCIL')
+                        safe_op(r, "rig.join_group_from_layer", {"layer_index": i}, text="", icon='GROUP')
+                        safe_op(r, "rig.add_to_existing_layer", {"layer_index": i}, text="", icon='ADD')
+                        safe_op(r, "rig.kick_selected_from_layer", {"layer_index": i}, text="", icon='X')
+                        safe_op(r, "rig.delete_layer", {"layer_index": i}, text="", icon='TRASH')
 
-                        row.prop(layer, "show_extra_buttons", text="", icon='TOOL_SETTINGS')
+                        if len(visible_globals) > 1:
+                            r.separator()
+                            safe_op(r, "rig.move_layer_up", {"layer_index": i, "group_index": -1}, text="", icon='TRIA_UP')
+                            safe_op(r, "rig.move_layer_down", {"layer_index": i, "group_index": -1}, text="", icon='TRIA_DOWN')
 
-                        if getattr(layer, "show_extra_buttons", False):
-                            sub_box = box.box()
-                            r = sub_box.row(align=True)
+                        sub.prop(layer, "export_mark", text="Mark for Export")
 
-                            safe_op_set(r, "rig.delete_layer", {"layer_index": i}, text="", icon='TRASH')
-                            safe_op_set(r, "rig.rename_layer", {"layer_index": i}, text="", icon='GREASEPENCIL')
-                            safe_op_set(r, "rig.join_group_from_layer", {"layer_index": i}, text="", icon='GROUP')
-                            safe_op_set(r, "rig.add_to_existing_layer", {"layer_index": i}, text="", icon='ADD')
-                            safe_op_set(r, "rig.kick_selected_from_layer", {"layer_index": i}, text="", icon='X')
-                             
+        layout.separator(factor=1.4)
 
-                            # export mark property safeguard
-                            if not hasattr(layer, "export_mark"):
-                                setattr(layer, "export_mark", False)
-                            r.prop(layer, "export_mark", text="Mark for export")
-                    except Exception as e:
-                        # don't hide the whole UI — print to console and show small message
-                        print("[Raha UI] Error drawing global layer box:", e)
-                        err_box = layout.box()
-                        err_box.label(text="Error drawing layer (see console)", icon='ERROR')
-
-#        layout.separator()
-
-        # -----------------------------------------------------------------
+        # ============================================================
         # GROUPS
-        # -----------------------------------------------------------------
-        if hasattr(scene, "temp_groups") and scene.temp_groups.groups:
-            layout.label(text="Groups:")
+        # ============================================================
+        if hasattr(scene, "temp_groups") and getattr(scene.temp_groups, "groups", []):
+            col = layout.column()
+            col.label(text="Groups", icon='GROUP')
+
             for g_index, group in enumerate(scene.temp_groups.groups):
                 try:
-                    box = layout.box()
-                    header = box.row(align=True)
+                    # Default property setup
+                    for prop in ["expanded", "is_visible", "export_mark", "layer_indices"]:
+                        if not hasattr(group, prop):
+                            setattr(group, prop, True if prop == "expanded" else False if prop == "is_visible" else [])
 
-                    header.prop(group, "expanded", text="", icon='TRIA_DOWN' if getattr(group, "expanded", True) else 'TRIA_RIGHT', emboss=False)
-                    header.label(text=group.name if getattr(group, "name", "") else f"Group {g_index}")
+                    group_box = col.box()
+                    group_header = group_box.row(align=True)
 
-                    # group-level operators
-                   
-                    safe_op_set(header, "rig.toggle_group_visibility", {"group_index": g_index}, text="", icon='HIDE_OFF' if getattr(group, "is_visible", True) else 'HIDE_ON')
-                    safe_op_set(header, "rig.add_layer_to_group_via_enum", {"group_index": g_index}, text="", icon='AREA_JOIN_DOWN')
-                    safe_op_set(header, "rig.rename_group", {"group_index": g_index}, text="", icon='GREASEPENCIL')
-                    safe_op_set(header, "rig.delete_group", {"group_index": g_index}, text="", icon='TRASH')
+                    # Expand arrow + group name
+                    expanded_icon = 'TRIA_DOWN' if getattr(group, "expanded", True) else 'TRIA_RIGHT'
+                    group_header.prop(group, "expanded", text="", icon=expanded_icon, emboss=False)
+                    group_header.label(text=getattr(group, "name", f"Group {g_index}"))
 
-                    # export mark visual
-                    sub = header.row()
-                    if not hasattr(group, "export_mark"):
-                        setattr(group, "export_mark", False)
-                    sub.prop(group, "export_mark", text="")
-                    sub.label(text="Mark for export")
+                    # Reorder buttons
+                    move_row = group_header.row(align=True)
+                    move_row.scale_x = 0.9
+                    safe_op(move_row, "rig.move_group_up", {"group_index": g_index}, text="", icon='TRIA_UP')
+                    safe_op(move_row, "rig.move_group_down", {"group_index": g_index}, text="", icon='TRIA_DOWN')
 
-                    # expanded content
+                    # Visibility + rename + delete
+                    safe_op(group_header, "rig.toggle_group_visibility", {"group_index": g_index}, text="", 
+                            icon='HIDE_OFF' if getattr(group, "is_visible", True) else 'HIDE_ON')
+                    safe_op(group_header, "rig.rename_group", {"group_index": g_index}, text="", icon='GREASEPENCIL')
+                    safe_op(group_header, "rig.delete_group", {"group_index": g_index}, text="", icon='TRASH')
+                    group_header.prop(group, "export_mark", text="", icon='CHECKMARK')
+
+                    # If expanded: draw group contents
                     if getattr(group, "expanded", True):
-                        # add-layer button (explicit row)
-                        row_add = box.row(align=True)
-#                        safe_op_set(row_add, "rig.add_layer_to_group_via_enum", {"group_index": g_index}, text="Add Layer from Global", icon='ADD')
-
-                        if getattr(group, "layer_indices", None):
-#                            box.label(text="Layers in group:")
-                            for entry_idx, idx in enumerate(group.layer_indices):
-                                li = idx.index
-                                # guard invalid indices
-                                if not (0 <= li < len(scene.temp_layers.layers)):
+                        if group.layer_indices:
+                            for entry_idx, entry in enumerate(group.layer_indices):
+                                li = getattr(entry, "index", -1)
+                                if li < 0 or li >= len(scene.temp_layers.layers):
                                     continue
+
                                 layer_ref = scene.temp_layers.layers[li]
+                                layer_box = group_box.box()
+                                lr = layer_box.row(align=True)
+                                lr.scale_y = 1.0
+                                safe_op(lr, "rig.select_layer_items", {"layer_index": li}, text=layer_ref.name, icon='RESTRICT_SELECT_OFF')
+                                safe_op(lr, "rig.toggle_layer_visibility", {"layer_index": li}, text="", 
+                                        icon='HIDE_OFF' if getattr(layer_ref, "is_visible", True) else 'HIDE_ON')
+                                lr.prop(layer_ref, "show_extra_buttons_group", text="", icon='SETTINGS')
 
-                                row = box.row(align=True)
-                                safe_op_set(row, "rig.select_layer_items", {"layer_index": li}, text=layer_ref.name, icon='RESTRICT_SELECT_OFF')
-                                safe_op_set(row, "rig.deselect_layer_items", {"layer_index": li}, text="", icon='RESTRICT_SELECT_ON')
-                                
-
-                                safe_op_set(row, "rig.toggle_layer_visibility", {"layer_index": li}, text="", icon='HIDE_OFF' if getattr(layer_ref, "is_visible", True) else 'HIDE_ON')
-
-                                # ensure per-layer group toggle property exists
-                                if not hasattr(layer_ref, "show_extra_buttons_group"):
-                                    setattr(layer_ref, "show_extra_buttons_group", False)
-                                row.prop(layer_ref, "show_extra_buttons_group", text="", icon='TOOL_SETTINGS')
-
+                                # If expanded options for this layer
                                 if getattr(layer_ref, "show_extra_buttons_group", False):
-                                    sub_box = box.box()
+                                    sub_box = layer_box.box()
+                                    sub_box.scale_y = 0.9
                                     r = sub_box.row(align=True)
+                                    safe_op(r, "rig.rename_layer", {"layer_index": li}, text="", icon='GREASEPENCIL')
+                                    safe_op(r, "rig.add_to_existing_layer", {"layer_index": li}, text="", icon='ADD')
+                                    safe_op(r, "rig.kick_selected_from_layer", {"layer_index": li}, text="", icon='X')
+                                    safe_op(r, "rig.remove_layer_from_group", {"group_index": g_index, "entry_index": entry_idx}, text="", icon='TRACKING_CLEAR_FORWARDS')
 
-                                    safe_op_set(r, "rig.delete_layer", {"layer_index": li}, text="", icon='TRASH')
-                                    safe_op_set(r, "rig.rename_layer", {"layer_index": li}, text="", icon='GREASEPENCIL')
-                                    safe_op_set(r, "rig.join_group_from_layer", {"layer_index": li}, text="", icon='GROUP')
-                                    safe_op_set(r, "rig.add_to_existing_layer", {"layer_index": li}, text="", icon='ADD')
-                                    safe_op_set(r, "rig.kick_selected_from_layer", {"layer_index": li}, text="", icon='X')
-                                    safe_op_set(r, "rig.remove_layer_from_group", {"layer_index": li}, text="", icon='TRACKING_CLEAR_FORWARDS')                                    
+                                    if len(group.layer_indices) > 1:
+                                        r.separator()
+                                        safe_op(r, "rig.move_layer_up", {"layer_index": li, "group_index": g_index}, text="", icon='TRIA_UP')
+                                        safe_op(r, "rig.move_layer_down", {"layer_index": li, "group_index": g_index}, text="", icon='TRIA_DOWN')
+                        else:
+                            empty = group_box.box()
+                            empty.label(text="(Empty Group)", icon='INFO')
 
-                                    # remove-from-group operator (needs group_index + entry_index)
-#                                    op_rem = safe_op_set(sub_box, "rig.remove_layer_from_group", None, text="Kick From Group", icon='TRACKING_CLEAR_FORWARDS')
-#                                    if op_rem is not None:
-#                                        try:
-#                                            op_rem.group_index = g_index
-#                                            op_rem.entry_index = entry_idx
-#                                        except Exception as e:
-#                                            print(f"[Raha UI] failed set remove props: {e}")
                 except Exception as e:
-                    print("[Raha UI] Error drawing group box:", e)
-                    err_box = layout.box()
-                    err_box.label(text="Error drawing group (see console)", icon='ERROR')
+                    err = col.box()
+                    err.label(text=f"Error drawing group {g_index}: {e}", icon='ERROR')
 
-        layout.separator()
-        layout.label(text="Tips: Select bones/objects then use 'Kick Selected' on a layer to remove them.")
+
 
 
 
@@ -1182,6 +1395,7 @@ classes = (
     GroupLayerIndex,
     TemporaryRigGroup,
     RigGroupManager,
+    
 
     VIEW3D_OT_isolate_toggle,
     
@@ -1210,7 +1424,10 @@ classes = (
     RIG_OT_import_layers_groups,
 
     VIEW3D_PT_rig_layers_panel,
-    
+    RIG_OT_move_layer_up,      # Tambahkan ini
+    RIG_OT_move_layer_down,    # Tambahkan ini    
+    RIG_OT_move_group_up,    
+    RIG_OT_move_group_down,     
 )
 
 def register():
