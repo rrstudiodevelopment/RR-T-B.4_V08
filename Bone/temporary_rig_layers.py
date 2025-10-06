@@ -1,5 +1,3 @@
-
-
 import bpy
 import json
 import os
@@ -9,52 +7,17 @@ import os
 # -------------------------------------------------------------------
 
 class TemporaryRigItem(bpy.types.PropertyGroup):
-    owner: bpy.props.StringProperty(name="Owner")   # object pemilik
-    name: bpy.props.StringProperty(name="Item Name") # object/bone name
-    is_bone: bpy.props.BoolProperty(default=False)   # true kalau bone - FIX: This is correct
-
+    owner: bpy.props.StringProperty(name="Owner")
+    name: bpy.props.StringProperty(name="Item Name")
+    is_bone: bpy.props.BoolProperty(default=False)
 
 class TemporaryRigLayer(bpy.types.PropertyGroup):
     name: bpy.props.StringProperty(name="Layer Name", default="New Layer")
     items: bpy.props.CollectionProperty(type=TemporaryRigItem)
     is_visible: bpy.props.BoolProperty(name="Visible", default=True)
-
-    # Tambahan properti untuk UI toggle
-    show_extra_buttons: bpy.props.BoolProperty(
-        name="Show Extra Buttons",
-        description="Tampilkan tombol-tombol tambahan untuk layer global",
-        default=False
-    )
-
-    show_extra_buttons_group: bpy.props.BoolProperty(
-        name="Show Extra Buttons (Group)",
-        description="Tampilkan tombol-tombol tambahan untuk layer dalam group",
-        default=False
-    )
-
-    export_mark: bpy.props.BoolProperty(
-        name="Mark for Export",
-        description="Tandai layer ini untuk diexport",
-        default=False
-    )
-
-
-    
-    def toggle_visibility(self, context):
-        self.is_visible = not self.is_visible
-        is_visible = self.is_visible
-        for item in self.items:
-            arm = bpy.data.objects.get(item.owner)
-            if arm and arm.type == 'ARMATURE':
-                bone = arm.data.bones.get(item.name)
-                if bone:
-                    bone.hide = not is_visible
-            else:
-                obj = bpy.data.objects.get(item.name)
-                if obj:
-                    obj.hide_set(not is_visible)
-        for area in context.screen.areas:
-            area.tag_redraw()
+    show_extra_buttons: bpy.props.BoolProperty(name="Show Extra Buttons", default=False)
+    show_extra_buttons_group: bpy.props.BoolProperty(name="Show Extra Buttons (Group)", default=False)
+    export_mark: bpy.props.BoolProperty(name="Mark for Export", default=False)
 
 class RigLayerManager(bpy.types.PropertyGroup):
     layers: bpy.props.CollectionProperty(type=TemporaryRigLayer)
@@ -78,6 +41,14 @@ class RigGroupManager(bpy.types.PropertyGroup):
 # Helpers
 # -------------------------------------------------------------------
 
+def enum_layers(self, context):
+    items = [("NONE", "No Layers", "")]
+    scene = context.scene
+    if not hasattr(scene, "temp_layers") or not scene.temp_layers.layers:
+        return items
+    for i, l in enumerate(scene.temp_layers.layers):
+        items.append((str(i), l.name or f"Layer {i}", f"Layer {l.name}"))
+    return items
 
 def get_layer_by_index(scene, layer_index):
     if not hasattr(scene, "temp_layers"):
@@ -89,44 +60,84 @@ def get_layer_by_index(scene, layer_index):
     return None
 
 def layer_is_in_any_group(scene, layer_index):
+    """Cek apakah layer sudah ada dalam group."""
     if not hasattr(scene, "temp_groups"):
         return False
-    for g in scene.temp_groups.groups:
-        for idx in g.layer_indices:
+    for group in scene.temp_groups.groups:
+        for idx in group.layer_indices:
             if idx.index == layer_index:
                 return True
     return False
 
-def find_group_and_entry_for_layer(scene, layer_index):
+def validate_and_fix_layer_duplication_operator(context):
+    """Operator-safe version of duplication fix"""
+    scene = context.scene
     if not hasattr(scene, "temp_groups"):
-        return (None, None)
-    for gi, g in enumerate(scene.temp_groups.groups):
-        for ei, idx in enumerate(g.layer_indices):
-            if idx.index == layer_index:
-                return (gi, ei)
-    return (None, None)
-
-def ensure_pose_mode_for_object(obj):
-    try:
-        bpy.context.view_layer.objects.active = obj
-        if bpy.context.mode != 'POSE':
-            bpy.ops.object.mode_set(mode='POSE')
-        return True
-    except Exception:
-        return False
+        return 0
+        
+    layer_to_groups = {}
+    fixed_count = 0
     
-def validate_import_item(owner_name, item_name, is_bone):
-    """Validate if an item exists in the current scene"""
-    if is_bone:
-        armature = bpy.data.objects.get(owner_name)
-        if not armature or armature.type != 'ARMATURE':
-            return False
-        return item_name in armature.data.bones
-    else:
-        return item_name in bpy.data.objects    
+    for group_idx, group in enumerate(scene.temp_groups.groups):
+        for entry_idx, entry in enumerate(group.layer_indices):
+            layer_index = entry.index
+            if layer_index not in layer_to_groups:
+                layer_to_groups[layer_index] = []
+            layer_to_groups[layer_index].append((group_idx, entry_idx))
+    
+    for layer_index, groups in layer_to_groups.items():
+        if len(groups) > 1:
+            for i in range(1, len(groups)):
+                group_idx, entry_idx = groups[i]
+                if (0 <= group_idx < len(scene.temp_groups.groups) and 
+                    0 <= entry_idx < len(scene.temp_groups.groups[group_idx].layer_indices)):
+                    current_entry = scene.temp_groups.groups[group_idx].layer_indices[entry_idx]
+                    if current_entry.index == layer_index:
+                        scene.temp_groups.groups[group_idx].layer_indices.remove(entry_idx)
+                        fixed_count += 1
+    
+    return fixed_count
+
+def check_layer_duplication(scene):
+    """Hanya check tanpa modify - untuk UI display"""
+    if not hasattr(scene, "temp_groups"):
+        return 0
+        
+    layer_to_groups = {}
+    duplicate_count = 0
+    
+    for group in scene.temp_groups.groups:
+        for entry in group.layer_indices:
+            layer_index = entry.index
+            if layer_index not in layer_to_groups:
+                layer_to_groups[layer_index] = 0
+            layer_to_groups[layer_index] += 1
+    
+    for layer_index, count in layer_to_groups.items():
+        if count > 1:
+            duplicate_count += (count - 1)
+    
+    return duplicate_count
 
 # -------------------------------------------------------------------
-# Operators - Isolate (preserve behavior)
+# Operator untuk fix duplication
+# -------------------------------------------------------------------
+class RIG_OT_fix_layer_duplication(bpy.types.Operator):
+    bl_idname = "rig.fix_layer_duplication"
+    bl_label = "Fix Layer Duplication"
+    bl_description = "Fix layers that are in multiple groups"
+    bl_options = {'REGISTER', 'UNDO'}
+
+    def execute(self, context):
+        fixed_count = validate_and_fix_layer_duplication_operator(context)
+        if fixed_count > 0:
+            self.report({'INFO'}, f"Fixed {fixed_count} layer duplications")
+        else:
+            self.report({'INFO'}, "No layer duplications found")
+        return {'FINISHED'}
+
+# -------------------------------------------------------------------
+# Operators - Isolate
 # -------------------------------------------------------------------
 class VIEW3D_OT_isolate_toggle(bpy.types.Operator):
     bl_idname = "view3d.isolate_toggle"
@@ -228,55 +239,44 @@ class ToggleLayerVisibility(bpy.types.Operator):
     """Toggle visibility dari layer sementara."""
     bl_idname = "rig.toggle_layer_visibility"
     bl_label = "Toggle Visibility"
+    bl_options = {'REGISTER', 'UNDO'}
 
     layer_index: bpy.props.IntProperty()
 
     def execute(self, context):
         scene = context.scene
         temp_layer = scene.temp_layers.layers[self.layer_index]
-
-        # Toggle flag visible
         is_visible = not temp_layer.is_visible
         temp_layer.is_visible = is_visible
 
         for item in temp_layer.items:
-            # --- Cek ARMATURE OWNER ---
             arm_obj = bpy.data.objects.get(item.owner)
             if arm_obj and arm_obj.type == 'ARMATURE':
-                # pastikan masih ada di scene/view layer
                 if arm_obj.name not in context.view_layer.objects:
                     continue
-
-                # aktifkan armature pemilik
                 context.view_layer.objects.active = arm_obj
                 if context.mode != 'POSE':
                     try:
                         bpy.ops.object.mode_set(mode='POSE')
                     except RuntimeError:
-                        # kalau tidak bisa masuk pose mode → skip
                         continue
-
                 bone = arm_obj.data.bones.get(item.name)
                 if bone:
                     bone.hide = not is_visible
-                continue  # lanjut ke item berikutnya
+                continue
 
-            # --- Kalau bukan armature, cek sebagai OBJECT biasa ---
             obj = bpy.data.objects.get(item.name)
             if obj:
-                # cek apakah object masih ada di scene
                 if obj.name not in context.view_layer.objects:
                     continue
-                # toggle hide
                 obj.hide_set(not is_visible)
 
         return {'FINISHED'}
     
-    
 class RIG_OT_add_selection_to_layer(bpy.types.Operator):
     bl_idname = "rig.add_selection_to_layer"
     bl_label = "Add Layer from Selection"
-    bl_description = "Create a new global layer from current selection (objects or pose bones)"
+    bl_description = "Create a new global layer from current selection"
     bl_options = {'REGISTER', 'UNDO'}
 
     layer_name: bpy.props.StringProperty(name="Layer Name", default="New Layer")
@@ -289,14 +289,12 @@ class RIG_OT_add_selection_to_layer(bpy.types.Operator):
         new_layer = scene.temp_layers.layers.add()
         new_layer.name = self.layer_name
 
-        # objek biasa
         for obj in context.selected_objects:
             item = new_layer.items.add()
             item.owner = obj.name
             item.name = obj.name
             item.is_bone = False
 
-        # bone
         arm = context.object if context.object and context.object.type == 'ARMATURE' else None
         if arm and context.selected_pose_bones:
             for bone in context.selected_pose_bones:
@@ -309,7 +307,6 @@ class RIG_OT_add_selection_to_layer(bpy.types.Operator):
 
     def invoke(self, context, event):
         return context.window_manager.invoke_props_dialog(self)
-
 
 class RIG_OT_add_to_existing_layer(bpy.types.Operator):
     bl_idname = "rig.add_to_existing_layer"
@@ -328,10 +325,8 @@ class RIG_OT_add_to_existing_layer(bpy.types.Operator):
 
         added_count = 0
 
-        # Handle OBJECT mode selection
         if context.mode == 'OBJECT':
             for obj in context.selected_objects:
-                # Check if object already exists in layer
                 exists = any(it.owner == obj.name and it.name == obj.name and not it.is_bone for it in layer.items)
                 if not exists:
                     item = layer.items.add()
@@ -340,11 +335,9 @@ class RIG_OT_add_to_existing_layer(bpy.types.Operator):
                     item.is_bone = False
                     added_count += 1
 
-        # Handle POSE mode selection (BONES)
         elif context.mode == 'POSE' and context.object and context.object.type == 'ARMATURE':
             armature = context.object
             for bone in context.selected_pose_bones:
-                # Check if bone already exists in layer
                 exists = any(it.owner == armature.name and it.name == bone.name and it.is_bone for it in layer.items)
                 if not exists:
                     item = layer.items.add()
@@ -353,11 +346,9 @@ class RIG_OT_add_to_existing_layer(bpy.types.Operator):
                     item.is_bone = True
                     added_count += 1
 
-        # Handle EDIT mode selection (BONES)
         elif context.mode == 'EDIT_ARMATURE' and context.object and context.object.type == 'ARMATURE':
             armature = context.object
             for bone in context.selected_bones:
-                # Check if bone already exists in layer
                 exists = any(it.owner == armature.name and it.name == bone.name and it.is_bone for it in layer.items)
                 if not exists:
                     item = layer.items.add()
@@ -369,13 +360,15 @@ class RIG_OT_add_to_existing_layer(bpy.types.Operator):
         if added_count > 0:
             self.report({'INFO'}, f"Added {added_count} item(s) to layer")
         else:
-            self.report({'INFO'}, "No new items added (may already exist in layer)")
+            self.report({'INFO'}, "No new items added")
 
         return {'FINISHED'}
 
 class RIG_OT_delete_layer(bpy.types.Operator):
     bl_idname = "rig.delete_layer"
     bl_label = "Delete Layer"
+    bl_options = {'REGISTER', 'UNDO'}
+
     layer_index: bpy.props.IntProperty()
 
     def execute(self, context):
@@ -430,7 +423,6 @@ class RIG_OT_kick_selected_from_layer(bpy.types.Operator):
             return {'CANCELLED'}
 
         removed = 0
-        # Objects
         for obj in context.selected_objects:
             for i, it in enumerate(list(layer.items)):
                 if it.owner == obj.name and it.name == obj.name:
@@ -438,7 +430,6 @@ class RIG_OT_kick_selected_from_layer(bpy.types.Operator):
                     removed += 1
                     break
 
-        # Bones (only from active armature in pose mode)
         if context.mode == 'POSE' and context.object and context.object.type == 'ARMATURE':
             arm = context.object
             for pb in context.selected_pose_bones:
@@ -452,7 +443,7 @@ class RIG_OT_kick_selected_from_layer(bpy.types.Operator):
         return {'FINISHED'}
 
 # -------------------------------------------------------------------
-# Select dan Deselect operator (fixed proper class)
+# Select dan Deselect operator
 # -------------------------------------------------------------------
 class RIG_OT_select_layer_items(bpy.types.Operator):
     bl_idname = "rig.select_layer_items"
@@ -472,22 +463,18 @@ class RIG_OT_select_layer_items(bpy.types.Operator):
             self.report({'WARNING'}, "Layer not found")
             return {'CANCELLED'}
 
-        # deteksi apakah layer ini mengandung bone
         has_bone = any(it.is_bone for it in layer.items)
 
         if not self.extend:
             if has_bone:
-                # Clear selection pose bones
                 arm = bpy.context.object if bpy.context.object and bpy.context.object.type == 'ARMATURE' else None
                 if arm and arm.mode == 'POSE':
                     for pb in arm.pose.bones:
                         pb.bone.select = False
             else:
-                # Clear semua object di scene
                 for obj in context.view_layer.objects:
                     obj.select_set(False)
 
-        # proses select
         for it in layer.items:
             arm = bpy.data.objects.get(it.owner)
             if not arm:
@@ -506,7 +493,6 @@ class RIG_OT_select_layer_items(bpy.types.Operator):
             else:
                 obj = bpy.data.objects.get(it.name)
                 if obj:
-                    # Pastikan di OBJECT MODE untuk select object
                     if context.mode != 'OBJECT':
                         try:
                             bpy.ops.object.mode_set(mode='OBJECT')
@@ -516,7 +502,6 @@ class RIG_OT_select_layer_items(bpy.types.Operator):
                     context.view_layer.objects.active = obj
 
         return {'FINISHED'}
-
 
 class RIG_OT_deselect_layer_items(bpy.types.Operator):
     """Deselect all items in the chosen layer"""
@@ -532,11 +517,9 @@ class RIG_OT_deselect_layer_items(bpy.types.Operator):
             self.report({'WARNING'}, "Layer not found")
             return {'CANCELLED'}
 
-        # deteksi apakah layer ini mengandung bone
         has_bone = any(it.is_bone for it in layer.items)
 
         if has_bone:
-            # Deselect bones
             arm = bpy.context.object if bpy.context.object and bpy.context.object.type == 'ARMATURE' else None
             if arm and arm.mode == 'POSE':
                 for it in layer.items:
@@ -544,7 +527,6 @@ class RIG_OT_deselect_layer_items(bpy.types.Operator):
                     if pb:
                         pb.bone.select = False
         else:
-            # Deselect objects
             for it in layer.items:
                 obj = bpy.data.objects.get(it.name)
                 if obj:
@@ -553,51 +535,14 @@ class RIG_OT_deselect_layer_items(bpy.types.Operator):
         self.report({'INFO'}, f"Deselected all items in layer '{layer.name}'")
         return {'FINISHED'}
 
-
-
 # -------------------------------------------------------------------
-# Remove a specific item by index (kept as optional)
+# Groups operators
 # -------------------------------------------------------------------
-class RIG_OT_remove_item_from_layer(bpy.types.Operator):
-    bl_idname = "rig.remove_item_from_layer"
-    bl_label = "Remove Item From Layer"
-    bl_description = "Remove a specific item (object or bone) from a layer"
-    bl_options = {'REGISTER', 'UNDO'}
-
-    layer_index: bpy.props.IntProperty()
-    item_index: bpy.props.IntProperty()
-
-    def execute(self, context):
-        layer = get_layer_by_index(context.scene, self.layer_index)
-        if not layer:
-            self.report({'WARNING'}, "Layer not found")
-            return {'CANCELLED'}
-        if 0 <= self.item_index < len(layer.items):
-            layer.items.remove(self.item_index)
-            return {'FINISHED'}
-        self.report({'WARNING'}, "Invalid item index")
-        return {'CANCELLED'}
-
-# -------------------------------------------------------------------
-# Groups + join/add via enum
-# -------------------------------------------------------------------
-def enum_groups(self, context):
-    items = []
+def get_group_items(self, context):
     scene = context.scene
     if not hasattr(scene, "temp_groups") or not scene.temp_groups.groups:
-        return [("NONE", "No Groups", "")]
-    for i, g in enumerate(scene.temp_groups.groups):
-        items.append((str(i), g.name or f"Group {i}", ""))
-    return items
-
-def enum_layers(self, context):
-    items = []
-    scene = context.scene
-    if not hasattr(scene, "temp_layers") or not scene.temp_layers.layers:
-        return [("NONE", "No Layers", "")]
-    for i, l in enumerate(scene.temp_layers.layers):
-        items.append((str(i), l.name or f"Layer {i}", ""))
-    return items
+        return [("0", "No Groups", "")]
+    return [(str(i), g.name, "") for i, g in enumerate(scene.temp_groups.groups)]
 
 class RIG_OT_join_group_from_layer(bpy.types.Operator):
     bl_idname = "rig.join_group_from_layer"
@@ -606,31 +551,47 @@ class RIG_OT_join_group_from_layer(bpy.types.Operator):
     bl_options = {'REGISTER', 'UNDO'}
 
     layer_index: bpy.props.IntProperty()
-    group_choice: bpy.props.EnumProperty(items=enum_groups)
+    group_choice: bpy.props.EnumProperty(name="Group", items=get_group_items)
+
+    @classmethod
+    def poll(cls, context):
+        return hasattr(context.scene, "temp_groups") and len(context.scene.temp_groups.groups) > 0
 
     def execute(self, context):
         scene = context.scene
-        if self.group_choice == "NONE":
-            self.report({'WARNING'}, "No groups available")
-            return {'CANCELLED'}
-        try:
-            gi = int(self.group_choice)
-        except Exception:
-            self.report({'WARNING'}, "Invalid group selection")
-            return {'CANCELLED'}
-        grp = scene.temp_groups.groups[gi]
-        already = any(idx.index == self.layer_index for idx in grp.layer_indices)
-        if not already:
-            new_idx = grp.layer_indices.add()
-            new_idx.index = self.layer_index
+        target_group_index = int(self.group_choice)
+        target_group = scene.temp_groups.groups[target_group_index]
+
+        for idx, group in enumerate(scene.temp_groups.groups):
+            if idx == target_group_index:
+                continue
+            items_to_remove = [i for i, entry in enumerate(group.layer_indices) if entry.index == self.layer_index]
+            for i in reversed(items_to_remove):
+                group.layer_indices.remove(i)
+
+        new_entry = target_group.layer_indices.add()
+        new_entry.index = self.layer_index
+
+        self.report({'INFO'}, f"Layer moved to '{target_group.name}'")
         return {'FINISHED'}
 
     def invoke(self, context, event):
-        return context.window_manager.invoke_props_dialog(self)
+        scene = context.scene
+        if not hasattr(scene, "temp_groups") or len(scene.temp_groups.groups) == 0:
+            self.report({'WARNING'}, "No groups available. Create a group first.")
+            return {'CANCELLED'}
+
+        self.group_choice = "0"
+        return context.window_manager.invoke_props_dialog(self, width=300)
+
+    def draw(self, context):
+        layout = self.layout
+        layout.label(text="Select Group:")
+        layout.prop(self, "group_choice", text="")
 
 class RIG_OT_add_layer_to_group_via_enum(bpy.types.Operator):
     bl_idname = "rig.add_layer_to_group_via_enum"
-    bl_label = "Add Layer to Group (choose)"
+    bl_label = "Add Layer to Group"
     bl_description = "Choose a global layer to add into this group"
     bl_options = {'REGISTER', 'UNDO'}
 
@@ -639,26 +600,63 @@ class RIG_OT_add_layer_to_group_via_enum(bpy.types.Operator):
 
     def execute(self, context):
         scene = context.scene
+        
         if self.layer_choice == "NONE":
-            self.report({'WARNING'}, "No layers available")
+            self.report({'WARNING'}, "No layer selected")
             return {'CANCELLED'}
+            
         try:
-            li = int(self.layer_choice)
+            layer_index = int(self.layer_choice)
         except Exception:
             self.report({'WARNING'}, "Invalid layer selection")
             return {'CANCELLED'}
+
+        if not hasattr(scene, "temp_layers") or layer_index >= len(scene.temp_layers.layers):
+            self.report({'WARNING'}, "Layer data not found")
+            return {'CANCELLED'}
+
         grp = scene.temp_groups.groups[self.group_index]
-        if not any(idx.index == li for idx in grp.layer_indices):
-            new_idx = grp.layer_indices.add()
-            new_idx.index = li
+        
+        if any(entry.index == layer_index for entry in grp.layer_indices):
+            self.report({'INFO'}, "Layer already in this group")
+            return {'FINISHED'}
+
+        removed_from_other_groups = False
+        for other_group_idx, other_group in enumerate(scene.temp_groups.groups):
+            if other_group_idx == self.group_index:
+                continue
+                
+            items_to_remove = []
+            for entry_idx, entry in enumerate(other_group.layer_indices):
+                if entry.index == layer_index:
+                    items_to_remove.append(entry_idx)
+                    removed_from_other_groups = True
+            
+            for entry_idx in reversed(items_to_remove):
+                if 0 <= entry_idx < len(other_group.layer_indices):
+                    other_group.layer_indices.remove(entry_idx)
+
+        new_entry = grp.layer_indices.add()
+        new_entry.index = layer_index
+        
+        layer_name = scene.temp_layers.layers[layer_index].name
+        
+        if removed_from_other_groups:
+            self.report({'INFO'}, f"Moved '{layer_name}' to group '{grp.name}'")
+        else:
+            self.report({'INFO'}, f"Added '{layer_name}' to group '{grp.name}'")
+        
         return {'FINISHED'}
 
     def invoke(self, context, event):
+        self.layer_choice = "NONE"
         return context.window_manager.invoke_props_dialog(self)
 
 class RIG_OT_remove_layer_from_group(bpy.types.Operator):
     bl_idname = "rig.remove_layer_from_group"
     bl_label = "Remove Layer From Group"
+    bl_options = {'REGISTER', 'UNDO'}
+
     group_index: bpy.props.IntProperty()
     entry_index: bpy.props.IntProperty()
 
@@ -751,25 +749,21 @@ class RIG_OT_delete_group(bpy.types.Operator):
         group = temp_groups.groups[self.group_index]
 
         if self.delete_mode == 'GROUP_AND_LAYERS':
-            # Hapus semua layers di dalam group
             layer_indices_to_remove = []
             for idx in group.layer_indices:
                 layer_indices_to_remove.append(idx.index)
             
-            # Hapus layers dari global list (dari yang terbesar ke terkecil)
             layer_indices_to_remove.sort(reverse=True)
             for li in layer_indices_to_remove:
                 if 0 <= li < len(scene.temp_layers.layers):
                     scene.temp_layers.layers.remove(li)
             
-            # Perbarui indices di group lain
             for other_group in scene.temp_groups.groups:
                 for idx_entry in other_group.layer_indices:
                     for li in layer_indices_to_remove:
                         if idx_entry.index > li:
                             idx_entry.index -= 1
 
-        # Hapus group
         temp_groups.groups.remove(self.group_index)
 
         if self.delete_mode == 'GROUP_ONLY':
@@ -778,8 +772,6 @@ class RIG_OT_delete_group(bpy.types.Operator):
             self.report({'INFO'}, f"Group '{group.name}' and its layers deleted")
 
         return {'FINISHED'}
-
-
 
 class RIG_OT_rename_group(bpy.types.Operator):
     bl_idname = "rig.rename_group"
@@ -804,9 +796,6 @@ class RIG_OT_rename_group(bpy.types.Operator):
 # -------------------------------------------------------------------
 # Export / Import Operators
 # -------------------------------------------------------------------
-# -------------------------------------------------------------------
-# Export / Import Operators - FIXED VERSION
-# -------------------------------------------------------------------
 class RIG_OT_export_layers_groups(bpy.types.Operator):
     bl_idname = "rig.export_layers_groups"
     bl_label = "Export Layers/Groups"
@@ -819,6 +808,12 @@ class RIG_OT_export_layers_groups(bpy.types.Operator):
 
     def execute(self, context):
         scene = context.scene
+        
+        if hasattr(scene, "temp_groups"):
+            fixed_count = validate_and_fix_layer_duplication(scene)
+            if fixed_count > 0:
+                self.report({'INFO'}, f"Fixed {fixed_count} layer duplications before export")
+        
         layers_out = []
         groups_out = []
 
@@ -826,27 +821,25 @@ class RIG_OT_export_layers_groups(bpy.types.Operator):
             any_mark = any(l.export_mark for l in scene.temp_layers.layers)
             for l in scene.temp_layers.layers:
                 if l.export_mark or not any_mark:
-                    # FIX: Include is_bone information
                     items_data = []
                     for it in l.items:
                         item_data = {
                             "owner": it.owner,
                             "name": it.name,
-                            "is_bone": it.is_bone  # FIX: Add this
+                            "is_bone": it.is_bone
                         }
                         items_data.append(item_data)
                     
                     layers_out.append({
                         "name": l.name,
                         "is_visible": bool(l.is_visible),
-                        "items": items_data,  # Use the fixed data
+                        "items": items_data,
                     })
 
         if hasattr(scene, "temp_groups"):
             any_mark_g = any(g.export_mark for g in scene.temp_groups.groups)
             for g in scene.temp_groups.groups:
                 if g.export_mark or not any_mark_g:
-                    # FIX: Store layer indices instead of names for consistency
                     layer_indices = []
                     for idx in g.layer_indices:
                         layer_indices.append(idx.index)
@@ -854,13 +847,13 @@ class RIG_OT_export_layers_groups(bpy.types.Operator):
                     groups_out.append({
                         "name": g.name,
                         "is_visible": bool(g.is_visible),
-                        "layer_indices": layer_indices,  # FIX: Store indices
+                        "layer_indices": layer_indices,
                     })
 
         data = {
             "layers": layers_out, 
             "groups": groups_out,
-            "metadata": {  # FIX: Add metadata for versioning
+            "metadata": {
                 "version": "1.1",
                 "blender_version": bpy.app.version_string,
                 "export_time": str(bpy.context.scene.frame_current)
@@ -894,6 +887,7 @@ class RIG_OT_choose_import_mode(bpy.types.Operator):
     bl_idname = "rig.choose_import_mode"
     bl_label = "Import Layers/Groups"
     bl_description = "Choose import mode before importing JSON or .py data"
+    bl_options = {'REGISTER'}
 
     import_mode: bpy.props.EnumProperty(
         name="Import Mode",
@@ -910,13 +904,11 @@ class RIG_OT_choose_import_mode(bpy.types.Operator):
         layout.prop(self, "import_mode", expand=True)
 
     def execute(self, context):
-        # Setelah user pilih mode, buka file browser dengan mengirim import_mode
         bpy.ops.rig.import_layers_groups('INVOKE_DEFAULT', import_mode=self.import_mode)
         return {'FINISHED'}
 
     def invoke(self, context, event):
         return context.window_manager.invoke_props_dialog(self)
-
 
 class RIG_OT_import_layers_groups(bpy.types.Operator):
     bl_idname = "rig.import_layers_groups"
@@ -937,12 +929,10 @@ class RIG_OT_import_layers_groups(bpy.types.Operator):
     )
 
     def invoke(self, context, event):
-        # Jika import_mode sudah di-set dari operator sebelumnya, langsung buka file browser
         if hasattr(self, 'import_mode') and self.import_mode:
             context.window_manager.fileselect_add(self)
             return {'RUNNING_MODAL'}
         else:
-            # Jika tidak, tampilkan dialog pilihan mode
             return context.window_manager.invoke_props_dialog(self)
 
     def draw(self, context):
@@ -950,7 +940,6 @@ class RIG_OT_import_layers_groups(bpy.types.Operator):
         layout.prop(self, "import_mode")
 
     def execute(self, context):
-        # Langsung proses file yang dipilih
         return self.load_file(context)
 
     def load_file(self, context):
@@ -989,16 +978,12 @@ class RIG_OT_import_layers_groups(bpy.types.Operator):
         if not hasattr(scene, "temp_groups"):
             scene.temp_groups = bpy.props.PointerProperty(type=RigGroupManager)
 
-        # Hapus data lama jika mode REPLACE
         if self.import_mode == 'REPLACE':
             scene.temp_layers.layers.clear()
             scene.temp_groups.groups.clear()
 
         imported_layer_indices = {}
         
-        # =====================
-        # IMPORT LAYERS
-        # =====================
         for ld in data.get("layers", []):
             name = ld.get("name", "Imported Layer")
             items_data = ld.get("items", [])
@@ -1041,10 +1026,6 @@ class RIG_OT_import_layers_groups(bpy.types.Operator):
                                 new_item.owner = owner_name
                                 new_item.name = item_name
                                 new_item.is_bone = True
-                            else:
-                                print(f"Warning: Bone '{item_name}' not found in armature '{owner_name}'")
-                        else:
-                            print(f"Warning: Armature '{owner_name}' not found")
                     else:
                         obj = bpy.data.objects.get(item_name)
                         if obj:
@@ -1052,12 +1033,7 @@ class RIG_OT_import_layers_groups(bpy.types.Operator):
                             new_item.owner = owner_name
                             new_item.name = item_name
                             new_item.is_bone = False
-                        else:
-                            print(f"Warning: Object '{item_name}' not found")
 
-        # =====================
-        # IMPORT GROUPS
-        # =====================
         for gd in data.get("groups", []):
             gname = gd.get("name", "Imported Group")
             group_exists = False
@@ -1100,16 +1076,8 @@ class RIG_OT_import_layers_groups(bpy.types.Operator):
         self.report({'INFO'}, f"Imported {imported_layers_count} layers and {imported_groups_count} groups")
         return {'FINISHED'}
 
-    def check(self, context):
-        return True
-
-    def cancel(self, context):
-        pass
-
-
 # -------------------------------------------------------------------
-# 
-# -------------------------------------------------------------------
+# Move Operators
 # -------------------------------------------------------------------
 class RIG_OT_move_layer_up(bpy.types.Operator):
     """Move layer up in global or group"""
@@ -1125,13 +1093,11 @@ class RIG_OT_move_layer_up(bpy.types.Operator):
         if not hasattr(scene, "temp_layers"):
             return {'CANCELLED'}
 
-        # Jika dari GROUP
         if self.group_index >= 0 and hasattr(scene, "temp_groups"):
             groups = scene.temp_groups.groups
             if 0 <= self.group_index < len(groups):
                 group = groups[self.group_index]
                 entries = group.layer_indices
-                # cari posisi layer_index dalam group ini
                 pos = next((i for i, e in enumerate(entries) if e.index == self.layer_index), -1)
                 if pos > 0:
                     entries.move(pos, pos - 1)
@@ -1139,14 +1105,12 @@ class RIG_OT_move_layer_up(bpy.types.Operator):
                 else:
                     return {'CANCELLED'}
 
-        # Jika dari GLOBAL
         layers = scene.temp_layers.layers
         if self.layer_index <= 0 or self.layer_index >= len(layers):
             return {'CANCELLED'}
 
         layers.move(self.layer_index, self.layer_index - 1)
         return {'FINISHED'}
-
 
 class RIG_OT_move_layer_down(bpy.types.Operator):
     """Move layer down in global or group"""
@@ -1162,7 +1126,6 @@ class RIG_OT_move_layer_down(bpy.types.Operator):
         if not hasattr(scene, "temp_layers"):
             return {'CANCELLED'}
 
-        # Jika dari GROUP
         if self.group_index >= 0 and hasattr(scene, "temp_groups"):
             groups = scene.temp_groups.groups
             if 0 <= self.group_index < len(groups):
@@ -1175,14 +1138,12 @@ class RIG_OT_move_layer_down(bpy.types.Operator):
                 else:
                     return {'CANCELLED'}
 
-        # Jika dari GLOBAL
         layers = scene.temp_layers.layers
         if self.layer_index < 0 or self.layer_index >= len(layers) - 1:
             return {'CANCELLED'}
 
         layers.move(self.layer_index, self.layer_index + 1)
         return {'FINISHED'}
-
 
 class RIG_OT_move_group_up(bpy.types.Operator):
     """Move group up"""
@@ -1204,7 +1165,6 @@ class RIG_OT_move_group_up(bpy.types.Operator):
         groups.move(self.group_index, self.group_index - 1)
         return {'FINISHED'}
 
-
 class RIG_OT_move_group_down(bpy.types.Operator):
     """Move group down"""
     bl_idname = "rig.move_group_down"
@@ -1225,13 +1185,9 @@ class RIG_OT_move_group_down(bpy.types.Operator):
         groups.move(self.group_index, self.group_index + 1)
         return {'FINISHED'}
 
-
-# ================================================================
+# -------------------------------------------------------------------
 # Panel utama
-# ================================================================
-# ================================================================
-# Modern UI Panel: Flexi Picker
-# ================================================================
+# -------------------------------------------------------------------
 class VIEW3D_PT_rig_layers_panel(bpy.types.Panel):
     bl_label = "Flexi Picker"
     bl_idname = "VIEW3D_PT_rig_layers"
@@ -1243,12 +1199,18 @@ class VIEW3D_PT_rig_layers_panel(bpy.types.Panel):
     def draw(self, context):
         layout = self.layout
         scene = context.scene
+        
+        duplicate_count = check_layer_duplication(scene)
+        if duplicate_count > 0:
+            warning_box = layout.box()
+            warning_box.alert = True
+            warning_box.label(text=f"Warning: {duplicate_count} layer duplications found", icon='ERROR')
+            op_row = warning_box.row()
+            op_row.operator("rig.fix_layer_duplication", text="Fix Now", icon='TRASH')
+        
         layout.use_property_split = False
         layout.use_property_decorate = False
 
-        # ============================================================
-        # Helper for safe operator
-        # ============================================================
         def safe_op(container, idname, props=None, **kwargs):
             try:
                 op = container.operator(idname, **kwargs)
@@ -1260,9 +1222,6 @@ class VIEW3D_PT_rig_layers_panel(bpy.types.Panel):
                 print(f"[Flexi Picker UI] Operator failed: {idname} → {e}")
                 return None
 
-        # ============================================================
-        # Header Section
-        # ============================================================
         header = layout.row(align=True)
         header.scale_y = 1.1
         header.label(text="Quick Actions", icon='OUTLINER_COLLECTION')
@@ -1272,20 +1231,15 @@ class VIEW3D_PT_rig_layers_panel(bpy.types.Panel):
         safe_op(row, "rig.add_selection_to_layer", text="Add Sel", icon='ADD')
         safe_op(row, "rig.add_group", text="New Group", icon='GROUP')
         safe_op(row, "rig.export_layers_groups", text="", icon='EXPORT')
-#        safe_op(row, "rig.import_layers_groups", text="", icon='IMPORT')
         safe_op(row, "rig.choose_import_mode", text="", icon='IMPORT')        
-       
 
         layout.separator(factor=1.2)
 
-        # ============================================================
-        # Global Layers
-        # ============================================================
         if hasattr(scene, "temp_layers") and scene.temp_layers.layers:
             visible_globals = []
             for i, layer in enumerate(scene.temp_layers.layers):
                 try:
-                    if 'layer_is_in_any_group' in globals() and layer_is_in_any_group(scene, i):
+                    if layer_is_in_any_group(scene, i):
                         continue
                     visible_globals.append((i, layer))
                 except:
@@ -1307,7 +1261,6 @@ class VIEW3D_PT_rig_layers_panel(bpy.types.Panel):
                     safe_op(row, "rig.deselect_layer_items", {"layer_index": i}, text="", icon='RESTRICT_SELECT_ON')
                     row.prop(layer, "show_extra_buttons", text="", icon='SETTINGS')
 
-                    # --- Extra controls
                     if getattr(layer, "show_extra_buttons", False):
                         sub = box.column(align=True)
                         sub.separator(factor=0.3)
@@ -1327,42 +1280,31 @@ class VIEW3D_PT_rig_layers_panel(bpy.types.Panel):
 
         layout.separator(factor=1.4)
 
-        # ============================================================
-        # GROUPS
-        # ============================================================
         if hasattr(scene, "temp_groups") and getattr(scene.temp_groups, "groups", []):
             col = layout.column()
             col.label(text="Groups", icon='GROUP')
 
             for g_index, group in enumerate(scene.temp_groups.groups):
                 try:
-                    # Default property setup
-                    for prop in ["expanded", "is_visible", "export_mark", "layer_indices"]:
-                        if not hasattr(group, prop):
-                            setattr(group, prop, True if prop == "expanded" else False if prop == "is_visible" else [])
-
                     group_box = col.box()
                     group_header = group_box.row(align=True)
 
-                    # Expand arrow + group name
                     expanded_icon = 'TRIA_DOWN' if getattr(group, "expanded", True) else 'TRIA_RIGHT'
                     group_header.prop(group, "expanded", text="", icon=expanded_icon, emboss=False)
                     group_header.label(text=getattr(group, "name", f"Group {g_index}"))
 
-                    # Reorder buttons
                     move_row = group_header.row(align=True)
                     move_row.scale_x = 0.9
                     safe_op(move_row, "rig.move_group_up", {"group_index": g_index}, text="", icon='TRIA_UP')
                     safe_op(move_row, "rig.move_group_down", {"group_index": g_index}, text="", icon='TRIA_DOWN')
-
-                    # Visibility + rename + delete
+                
+                    safe_op(group_header, "rig.add_layer_to_group_via_enum", {"group_index": g_index}, text="", icon='ADD')                        
                     safe_op(group_header, "rig.toggle_group_visibility", {"group_index": g_index}, text="", 
                             icon='HIDE_OFF' if getattr(group, "is_visible", True) else 'HIDE_ON')
                     safe_op(group_header, "rig.rename_group", {"group_index": g_index}, text="", icon='GREASEPENCIL')
                     safe_op(group_header, "rig.delete_group", {"group_index": g_index}, text="", icon='TRASH')
                     group_header.prop(group, "export_mark", text="", icon='CHECKMARK')
 
-                    # If expanded: draw group contents
                     if getattr(group, "expanded", True):
                         if group.layer_indices:
                             for entry_idx, entry in enumerate(group.layer_indices):
@@ -1379,15 +1321,15 @@ class VIEW3D_PT_rig_layers_panel(bpy.types.Panel):
                                         icon='HIDE_OFF' if getattr(layer_ref, "is_visible", True) else 'HIDE_ON')
                                 lr.prop(layer_ref, "show_extra_buttons_group", text="", icon='SETTINGS')
 
-                                # If expanded options for this layer
                                 if getattr(layer_ref, "show_extra_buttons_group", False):
                                     sub_box = layer_box.box()
                                     sub_box.scale_y = 0.9
                                     r = sub_box.row(align=True)
-                                    safe_op(r, "rig.delete_layer", {"layer_index": li}, text="", icon='TRASH')                                                       
+                                    safe_op(r, "rig.join_group_from_layer", {"layer_index": li}, text="", icon='GROUP')                                                                                                                               
                                     safe_op(r, "rig.rename_layer", {"layer_index": li}, text="", icon='GREASEPENCIL')
                                     safe_op(r, "rig.add_to_existing_layer", {"layer_index": li}, text="", icon='ADD')
                                     safe_op(r, "rig.kick_selected_from_layer", {"layer_index": li}, text="", icon='X')
+                                    safe_op(r, "rig.delete_layer", {"layer_index": li}, text="", icon='TRASH') 
                                     safe_op(r, "rig.remove_layer_from_group", {"group_index": g_index, "entry_index": entry_idx}, text="", icon='TRACKING_CLEAR_FORWARDS')
                                     
 
@@ -1403,34 +1345,10 @@ class VIEW3D_PT_rig_layers_panel(bpy.types.Panel):
                     err = col.box()
                     err.label(text=f"Error drawing group {g_index}: {e}", icon='ERROR')
 
-
-
-
-
-# ================================================================
-# Helper untuk deteksi layer dalam group
-# ================================================================
-def layer_is_in_any_group(scene, layer_index):
-    """Cek apakah layer sudah ada dalam group."""
-    if not hasattr(scene, "temp_groups"):
-        return False
-    for group in scene.temp_groups.groups:
-        for idx in group.layer_indices:
-            if idx.index == layer_index:
-                return True
-    return False
-
-
-        
-        
-
 # -------------------------------------------------------------------
-
-
-
 # Registration
 # -------------------------------------------------------------------
-classes = (
+classes = [
     TemporaryRigItem,
     TemporaryRigLayer,
     RigLayerManager,
@@ -1438,46 +1356,45 @@ classes = (
     TemporaryRigGroup,
     RigGroupManager,
     
-
     VIEW3D_OT_isolate_toggle,
-    
     ToggleLayerVisibility,
     RIG_OT_add_selection_to_layer,
     RIG_OT_add_to_existing_layer,
     RIG_OT_delete_layer,
     RIG_OT_rename_layer,
     RIG_OT_kick_selected_from_layer,
-
     RIG_OT_select_layer_items,
     RIG_OT_deselect_layer_items,
-
-    RIG_OT_remove_item_from_layer,
-
     RIG_OT_join_group_from_layer,
     RIG_OT_add_layer_to_group_via_enum,
     RIG_OT_remove_layer_from_group,
     RIG_OT_toggle_group_visibility,
-
     RIG_OT_add_group,
     RIG_OT_delete_group,
     RIG_OT_rename_group,
-
     RIG_OT_export_layers_groups,
     RIG_OT_import_layers_groups,
-    RIG_OT_choose_import_mode,    
-
+    RIG_OT_choose_import_mode,
+    RIG_OT_fix_layer_duplication,
+    RIG_OT_move_layer_up,
+    RIG_OT_move_layer_down,
+    RIG_OT_move_group_up,
+    RIG_OT_move_group_down,
     VIEW3D_PT_rig_layers_panel,
-    RIG_OT_move_layer_up,      # Tambahkan ini
-    RIG_OT_move_layer_down,    # Tambahkan ini    
-    RIG_OT_move_group_up,    
-    RIG_OT_move_group_down,     
-)
+]
 
 def register():
     for cls in classes:
-        bpy.utils.register_class(cls)
-    bpy.types.Scene.temp_layers = bpy.props.PointerProperty(type=RigLayerManager)
-    bpy.types.Scene.temp_groups = bpy.props.PointerProperty(type=RigGroupManager)
+        try:
+            bpy.utils.register_class(cls)
+        except Exception as e:
+            print(f"Failed to register {cls}: {e}")
+    
+    try:
+        bpy.types.Scene.temp_layers = bpy.props.PointerProperty(type=RigLayerManager)
+        bpy.types.Scene.temp_groups = bpy.props.PointerProperty(type=RigGroupManager)
+    except Exception as e:
+        print(f"Failed to register properties: {e}")
 
 def unregister():
     try:
@@ -1488,6 +1405,7 @@ def unregister():
         del bpy.types.Scene.temp_groups
     except Exception:
         pass
+    
     for cls in reversed(classes):
         try:
             bpy.utils.unregister_class(cls)
@@ -1495,4 +1413,4 @@ def unregister():
             pass
 
 if __name__ == "__main__":
-    register() 
+    register()
