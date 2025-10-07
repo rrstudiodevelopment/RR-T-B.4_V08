@@ -406,6 +406,12 @@ class RIG_OT_rename_layer(bpy.types.Operator):
         return {'FINISHED'}
 
     def invoke(self, context, event):
+        # Ambil nama existing dari layer yang akan di-rename
+        layer = get_layer_by_index(context.scene, self.layer_index)
+        if layer:
+            # Set default value new_name dengan nama yang sudah ada
+            self.new_name = layer.name if layer.name else ""
+        
         return context.window_manager.invoke_props_dialog(self)
 
 class RIG_OT_kick_selected_from_layer(bpy.types.Operator):
@@ -444,7 +450,7 @@ class RIG_OT_kick_selected_from_layer(bpy.types.Operator):
 
 # -------------------------------------------------------------------
 # Select dan Deselect operator
-# -------------------------------------------------------------------
+
 class RIG_OT_select_layer_items(bpy.types.Operator):
     bl_idname = "rig.select_layer_items"
     bl_label = "Select Layer Items"
@@ -458,50 +464,92 @@ class RIG_OT_select_layer_items(bpy.types.Operator):
         return self.execute(context)
 
     def execute(self, context):
-        layer = get_layer_by_index(context.scene, self.layer_index)
+        # ambil layer
+        try:
+            layer = get_layer_by_index(context.scene, self.layer_index)
+        except Exception:
+            layer = None
+
         if not layer:
             self.report({'WARNING'}, "Layer not found")
             return {'CANCELLED'}
 
-        has_bone = any(it.is_bone for it in layer.items)
+        # cek apakah layer berisi bone atau object (atau campuran)
+        has_bone = any(getattr(it, "is_bone", False) for it in layer.items)
+        has_object = any(not getattr(it, "is_bone", False) for it in layer.items)
 
-        if not self.extend:
-            if has_bone:
-                arm = bpy.context.object if bpy.context.object and bpy.context.object.type == 'ARMATURE' else None
-                if arm and arm.mode == 'POSE':
-                    for pb in arm.pose.bones:
-                        pb.bone.select = False
-            else:
-                for obj in context.view_layer.objects:
-                    obj.select_set(False)
-
-        for it in layer.items:
-            arm = bpy.data.objects.get(it.owner)
-            if not arm:
-                continue
-
-            if it.is_bone and arm.type == 'ARMATURE':
+        # helper: unselect semua object
+        def unselect_all_objects():
+            for obj in context.selected_objects:
                 try:
-                    context.view_layer.objects.active = arm
-                    if context.mode != 'POSE':
-                        bpy.ops.object.mode_set(mode='POSE')
-                    pb = arm.pose.bones.get(it.name)
-                    if pb:
-                        pb.bone.select = True
+                    obj.select_set(False)
                 except Exception:
                     pass
+
+        # helper: unselect semua pose-bones
+        def unselect_all_pose_bones():
+            for obj in context.view_layer.objects:
+                if obj.type == 'ARMATURE' and obj.mode == 'POSE' and obj.pose:
+                    for pb in obj.pose.bones:
+                        try:
+                            pb.bone.select = False
+                        except Exception:
+                            pass
+
+        # Clear selection hanya jika BUKAN extend
+        if not self.extend:
+            if has_bone and not has_object:
+                # Target: Bone(s) - unselect objects dan bones
+                unselect_all_objects()
+                unselect_all_pose_bones()
+            elif has_object and not has_bone:
+                # Target: Object(s) - unselect objects saja
+                unselect_all_objects()
             else:
-                obj = bpy.data.objects.get(it.name)
+                # Campuran - unselect semua
+                unselect_all_objects()
+                unselect_all_pose_bones()
+
+        # Process items - untuk extend, items akan ditambahkan ke selection yang ada
+        for it in layer.items:
+            if getattr(it, "is_bone", False):
+                # Handle bone selection
+                arm = bpy.data.objects.get(getattr(it, "owner", None))
+                if not arm or arm.type != 'ARMATURE':
+                    continue
+
+                try:
+                    # Untuk bone selection, pastikan armature active dan dalam pose mode
+                    context.view_layer.objects.active = arm
+                    
+                    # Pastikan dalam pose mode
+                    if context.mode != 'POSE':
+                        bpy.ops.object.mode_set(mode='POSE')
+                    
+                    # Select bone (akan menambah ke selection jika extend=True)
+                    pb = arm.pose.bones.get(getattr(it, "name", ""))
+                    if pb:
+                        pb.bone.select = True
+                except Exception as e:
+                    print(f"Error selecting bone: {e}")
+            else:
+                # Handle object selection
+                obj = bpy.data.objects.get(getattr(it, "name", ""))
                 if obj:
-                    if context.mode != 'OBJECT':
+                    # Jika sedang di pose mode, pindah ke object mode dulu
+                    if context.mode == 'POSE':
                         try:
                             bpy.ops.object.mode_set(mode='OBJECT')
                         except Exception:
                             pass
+                    
+                    # Select object (akan menambah ke selection jika extend=True)
                     obj.select_set(True)
                     context.view_layer.objects.active = obj
 
         return {'FINISHED'}
+
+
 
 class RIG_OT_deselect_layer_items(bpy.types.Operator):
     """Deselect all items in the chosen layer"""
@@ -791,6 +839,15 @@ class RIG_OT_rename_group(bpy.types.Operator):
         return {'FINISHED'}
 
     def invoke(self, context, event):
+        # Ambil nama existing dari group yang akan di-rename
+        scene = context.scene
+        if (hasattr(scene, "temp_groups") and 
+            0 <= self.group_index < len(scene.temp_groups.groups)):
+            
+            existing_group = scene.temp_groups.groups[self.group_index]
+            # Set default value new_name dengan nama yang sudah ada
+            self.new_name = existing_group.name if existing_group.name else ""
+        
         return context.window_manager.invoke_props_dialog(self)
 
 # -------------------------------------------------------------------
@@ -799,7 +856,7 @@ class RIG_OT_rename_group(bpy.types.Operator):
 class RIG_OT_export_layers_groups(bpy.types.Operator):
     bl_idname = "rig.export_layers_groups"
     bl_label = "Export Layers/Groups"
-    bl_description = "Mark layers/groups to export (if none marked, all exported)."
+    bl_description = "Mark layers/groups to export (only marked items will be exported)."
     bl_options = {'REGISTER'}
 
     filepath: bpy.props.StringProperty(subtype="FILE_PATH")
@@ -809,18 +866,14 @@ class RIG_OT_export_layers_groups(bpy.types.Operator):
     def execute(self, context):
         scene = context.scene
         
-        if hasattr(scene, "temp_groups"):
-            fixed_count = validate_and_fix_layer_duplication(scene)
-            if fixed_count > 0:
-                self.report({'INFO'}, f"Fixed {fixed_count} layer duplications before export")
-        
         layers_out = []
         groups_out = []
+        exported_layer_names = set()  # UNTUK MELACAK LAYER YANG SUDAH DIEKSPOR
 
+        # EKSPOR LAYERS YANG DICENTANG LANGSUNG
         if hasattr(scene, "temp_layers"):
-            any_mark = any(l.export_mark for l in scene.temp_layers.layers)
             for l in scene.temp_layers.layers:
-                if l.export_mark or not any_mark:
+                if l.export_mark:  # HANYA JIKA DICENTANG
                     items_data = []
                     for it in l.items:
                         item_data = {
@@ -830,16 +883,19 @@ class RIG_OT_export_layers_groups(bpy.types.Operator):
                         }
                         items_data.append(item_data)
                     
-                    layers_out.append({
+                    layer_data = {
                         "name": l.name,
                         "is_visible": bool(l.is_visible),
                         "items": items_data,
-                    })
+                    }
+                    layers_out.append(layer_data)
+                    exported_layer_names.add(l.name)  # TANDAI LAYER INI SUDAH DIEKSPOR
 
+        # EKSPOR GROUPS YANG DICENTANG BESERTA SEMUA LAYER DI DALAMNYA
         if hasattr(scene, "temp_groups"):
-            any_mark_g = any(g.export_mark for g in scene.temp_groups.groups)
             for g in scene.temp_groups.groups:
-                if g.export_mark or not any_mark_g:
+                if g.export_mark:  # HANYA JIKA DICENTANG
+                    # EKSPOR INFORMASI GROUP
                     layer_indices = []
                     for idx in g.layer_indices:
                         layer_indices.append(idx.index)
@@ -849,6 +905,36 @@ class RIG_OT_export_layers_groups(bpy.types.Operator):
                         "is_visible": bool(g.is_visible),
                         "layer_indices": layer_indices,
                     })
+
+                    # EKSPOR SEMUA LAYER YANG ADA DI GROUP INI
+                    if hasattr(scene, "temp_layers"):
+                        for layer_idx in layer_indices:
+                            if 0 <= layer_idx < len(scene.temp_layers.layers):
+                                l = scene.temp_layers.layers[layer_idx]
+                                
+                                # HANYA EKSPOR JIKA LAYER BELUM DIEKSPOR SEBELUMNYA
+                                if l.name not in exported_layer_names:
+                                    items_data = []
+                                    for it in l.items:
+                                        item_data = {
+                                            "owner": it.owner,
+                                            "name": it.name,
+                                            "is_bone": it.is_bone
+                                        }
+                                        items_data.append(item_data)
+                                    
+                                    layer_data = {
+                                        "name": l.name,
+                                        "is_visible": bool(l.is_visible),
+                                        "items": items_data,
+                                    }
+                                    layers_out.append(layer_data)
+                                    exported_layer_names.add(l.name)  # TANDAI SUDAH DIEKSPOR
+
+        # PERIKSA APAKAH ADA YANG DICENTANG
+        if not layers_out and not groups_out:
+            self.report({'WARNING'}, "No layers or groups marked for export")
+            return {'CANCELLED'}
 
         data = {
             "layers": layers_out, 
@@ -860,7 +946,11 @@ class RIG_OT_export_layers_groups(bpy.types.Operator):
             }
         }
         
+        # OTOMATIS TAMBAH .json JIKA TIDAK ADA EKSTENSI
         fp = bpy.path.abspath(self.filepath)
+        if not fp.lower().endswith(('.json', '.py')):
+            fp += ".json"
+        
         ext = os.path.splitext(fp)[1].lower()
         try:
             if ext == ".py":
@@ -879,6 +969,7 @@ class RIG_OT_export_layers_groups(bpy.types.Operator):
         return {'FINISHED'}
 
     def invoke(self, context, event):
+        # SET DEFAULT FILENAME DENGAN EKSTENSI .json
         self.filepath = bpy.path.abspath("//raha_layers_export.json")
         context.window_manager.fileselect_add(self)
         return {'RUNNING_MODAL'}
@@ -1225,14 +1316,19 @@ class VIEW3D_PT_rig_layers_panel(bpy.types.Panel):
         header = layout.row(align=True)
         header.scale_y = 1.1
         header.label(text="Quick Actions", icon='OUTLINER_COLLECTION')
-
         row = layout.row(align=True)
         safe_op(row, "view3d.isolate_toggle", text="Isolate", icon='HIDE_OFF')
+  
+        row = layout.row(align=True)              
         safe_op(row, "rig.add_selection_to_layer", text="Add Sel", icon='ADD')
         safe_op(row, "rig.add_group", text="New Group", icon='GROUP')
+      
+        row.separator()        
         safe_op(row, "rig.export_layers_groups", text="", icon='EXPORT')
+        row.separator()         
         safe_op(row, "rig.choose_import_mode", text="", icon='IMPORT')        
 
+#======================== GLobal =======================================
         layout.separator(factor=1.2)
 
         if hasattr(scene, "temp_layers") and scene.temp_layers.layers:
@@ -1256,28 +1352,33 @@ class VIEW3D_PT_rig_layers_panel(bpy.types.Panel):
                     row = box.row(align=True)
                     row.scale_y = 1.2
                     safe_op(row, "rig.select_layer_items", {"layer_index": i}, text=layer.name, icon='RESTRICT_SELECT_OFF')
+                    safe_op(row, "rig.deselect_layer_items", {"layer_index": i}, text="", icon='RESTRICT_SELECT_ON')                    
                     safe_op(row, "rig.toggle_layer_visibility", {"layer_index": i}, text="", 
                             icon='HIDE_OFF' if getattr(layer, "is_visible", True) else 'HIDE_ON')
-                    safe_op(row, "rig.deselect_layer_items", {"layer_index": i}, text="", icon='RESTRICT_SELECT_ON')
+
                     row.prop(layer, "show_extra_buttons", text="", icon='SETTINGS')
+                    row.prop(layer, "export_mark", text="", icon='EXPORT')                     
+                  
 
                     if getattr(layer, "show_extra_buttons", False):
                         sub = box.column(align=True)
                         sub.separator(factor=0.3)
                         r = sub.row(align=True)
                         safe_op(r, "rig.rename_layer", {"layer_index": i}, text="", icon='GREASEPENCIL')
-                        safe_op(r, "rig.join_group_from_layer", {"layer_index": i}, text="", icon='GROUP')
                         safe_op(r, "rig.add_to_existing_layer", {"layer_index": i}, text="", icon='ADD')
                         safe_op(r, "rig.kick_selected_from_layer", {"layer_index": i}, text="", icon='X')
                         safe_op(r, "rig.delete_layer", {"layer_index": i}, text="", icon='TRASH')
-
+                        
                         if len(visible_globals) > 1:
                             r.separator()
                             safe_op(r, "rig.move_layer_up", {"layer_index": i, "group_index": -1}, text="", icon='TRIA_UP')
-                            safe_op(r, "rig.move_layer_down", {"layer_index": i, "group_index": -1}, text="", icon='TRIA_DOWN')
+                            safe_op(r, "rig.move_layer_down", {"layer_index": i, "group_index": -1}, text="", icon='TRIA_DOWN')                        
 
-                        sub.prop(layer, "export_mark", text="Mark for Export")
+                        r.separator(factor=8.0)                                                                                                                                                                                           
+                        safe_op(r, "rig.join_group_from_layer", {"layer_index": i}, text="", icon='GROUP')                        
 
+
+########## GROUP ==========================================
         layout.separator(factor=1.4)
 
         if hasattr(scene, "temp_groups") and getattr(scene.temp_groups, "groups", []):
@@ -1297,13 +1398,18 @@ class VIEW3D_PT_rig_layers_panel(bpy.types.Panel):
                     move_row.scale_x = 0.9
                     safe_op(move_row, "rig.move_group_up", {"group_index": g_index}, text="", icon='TRIA_UP')
                     safe_op(move_row, "rig.move_group_down", {"group_index": g_index}, text="", icon='TRIA_DOWN')
+                    group_header.separator(factor=2.0)
                 
                     safe_op(group_header, "rig.add_layer_to_group_via_enum", {"group_index": g_index}, text="", icon='ADD')                        
                     safe_op(group_header, "rig.toggle_group_visibility", {"group_index": g_index}, text="", 
                             icon='HIDE_OFF' if getattr(group, "is_visible", True) else 'HIDE_ON')
                     safe_op(group_header, "rig.rename_group", {"group_index": g_index}, text="", icon='GREASEPENCIL')
                     safe_op(group_header, "rig.delete_group", {"group_index": g_index}, text="", icon='TRASH')
-                    group_header.prop(group, "export_mark", text="", icon='CHECKMARK')
+               
+                    group_header.separator(factor=2.0) 
+                    group_header.prop(group, "export_mark", text="", icon='EXPORT')
+
+########## layer didalam group  ==========================================
 
                     if getattr(group, "expanded", True):
                         if group.layer_indices:
@@ -1317,6 +1423,7 @@ class VIEW3D_PT_rig_layers_panel(bpy.types.Panel):
                                 lr = layer_box.row(align=True)
                                 lr.scale_y = 1.0
                                 safe_op(lr, "rig.select_layer_items", {"layer_index": li}, text=layer_ref.name, icon='RESTRICT_SELECT_OFF')
+                                safe_op(lr, "rig.deselect_layer_items", {"layer_index": li}, text="", icon='RESTRICT_SELECT_ON')                                                            
                                 safe_op(lr, "rig.toggle_layer_visibility", {"layer_index": li}, text="", 
                                         icon='HIDE_OFF' if getattr(layer_ref, "is_visible", True) else 'HIDE_ON')
                                 lr.prop(layer_ref, "show_extra_buttons_group", text="", icon='SETTINGS')
@@ -1324,19 +1431,24 @@ class VIEW3D_PT_rig_layers_panel(bpy.types.Panel):
                                 if getattr(layer_ref, "show_extra_buttons_group", False):
                                     sub_box = layer_box.box()
                                     sub_box.scale_y = 0.9
-                                    r = sub_box.row(align=True)
-                                    safe_op(r, "rig.join_group_from_layer", {"layer_index": li}, text="", icon='GROUP')                                                                                                                               
+                                    r = sub_box.row(align=True)                                                                                                                               
                                     safe_op(r, "rig.rename_layer", {"layer_index": li}, text="", icon='GREASEPENCIL')
                                     safe_op(r, "rig.add_to_existing_layer", {"layer_index": li}, text="", icon='ADD')
                                     safe_op(r, "rig.kick_selected_from_layer", {"layer_index": li}, text="", icon='X')
                                     safe_op(r, "rig.delete_layer", {"layer_index": li}, text="", icon='TRASH') 
-                                    safe_op(r, "rig.remove_layer_from_group", {"group_index": g_index, "entry_index": entry_idx}, text="", icon='TRACKING_CLEAR_FORWARDS')
+                                    safe_op(r, "rig.remove_layer_from_group", {"group_index": g_index, "entry_index": entry_idx}, text="", icon='TRACKING_CLEAR_FORWARDS') 
                                     
 
                                     if len(group.layer_indices) > 1:
                                         r.separator()
                                         safe_op(r, "rig.move_layer_up", {"layer_index": li, "group_index": g_index}, text="", icon='TRIA_UP')
                                         safe_op(r, "rig.move_layer_down", {"layer_index": li, "group_index": g_index}, text="", icon='TRIA_DOWN')
+
+                                        r.separator(factor=7.0)    
+                                                                               
+                                        safe_op(r, "rig.join_group_from_layer", {"layer_index": li}, text="", icon='GROUP')
+                                        r.separator()                                                                                                                                                                                                                                                                                    
+                                        safe_op(r, "rig.remove_layer_from_group", {"group_index": g_index, "entry_index": entry_idx}, text="", icon='TRACKING_CLEAR_FORWARDS')                                        
                         else:
                             empty = group_box.box()
                             empty.label(text="(Empty Group)", icon='INFO')
